@@ -42,6 +42,8 @@ Use these build settings:
 - Root directory: leave blank
 - Node.js version: `22.13.0` or newer
 
+If Cloudflare tries to run `bunx opennextjs-cloudflare build`, the project is using the SSR/OpenNext build path. Change the Pages build command back to `npm run build` and the output directory to `out`.
+
 ## Notes
 
 The tools run in the browser. DeskFormat does not upload pasted values to a server.

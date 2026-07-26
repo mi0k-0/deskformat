@@ -32,6 +32,23 @@ npm run build
 
 The production build is configured as a static Next.js export and writes the site to `out/`.
 
+## Windows App
+
+DeskFormat can also be packaged as a Windows desktop app with Electron.
+
+```bash
+npm install
+npm run desktop:pack
+```
+
+The unpacked Windows app is written to `release/win-unpacked/`. Open `DeskFormat.exe` from that folder.
+
+For an installer build, run:
+
+```bash
+npm run desktop:dist
+```
+
 ## Cloudflare Pages
 
 Use these build settings:

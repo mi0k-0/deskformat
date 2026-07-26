@@ -30,6 +30,18 @@ Open the local URL shown in the terminal.
 npm run build
 ```
 
+The production build is configured as a static Next.js export and writes the site to `out/`.
+
+## Cloudflare Pages
+
+Use these build settings:
+
+- Framework preset: Next.js / Static Next.js
+- Build command: `npm run build`
+- Build output directory: `out`
+- Root directory: leave blank
+- Node.js version: `22.13.0` or newer
+
 ## Notes
 
 The tools run in the browser. DeskFormat does not upload pasted values to a server.

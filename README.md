@@ -2,4 +2,34 @@
 
 DeskFormat is a personal browser-based formatter workspace inspired by FreeFormatter, with a cleaner interface and local-first utilities.
 
-The full source is being prepared from the Codex workspace.
+## Tools
+
+- Quartz cron expression generator and explainer
+- JSON formatter, minifier, and validator
+- XML and HTML formatter/minifier
+- URL, Base64, and HTML entity encoder/decoder
+- Case converter
+- Regex tester
+- SHA-1 and SHA-256 hash generator
+- HEX to RGB/HSL color converter
+
+## Development
+
+Requires Node.js `>=22.13.0`.
+
+```bash
+npm install
+npm run dev
+```
+
+Open the local URL shown in the terminal.
+
+## Build
+
+```bash
+npm run build
+```
+
+## Notes
+
+The tools run in the browser. DeskFormat does not upload pasted values to a server.

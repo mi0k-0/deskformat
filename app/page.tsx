@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 type ToolId =
   | "image"
@@ -403,18 +403,25 @@ function normalizeHexColor(value: string) {
   throw new Error("Use a 3-digit or 6-digit hex color.");
 }
 
+function placeholderSize(config: PlaceholderConfig) {
+  return {
+    width: Math.max(1, Math.round(config.width)),
+    height: Math.max(1, Math.round(config.height)),
+  };
+}
+
 function buildPlaceholderRecipe(config: PlaceholderConfig) {
+  const { width, height } = placeholderSize(config);
   const background = normalizeHexColor(config.background).replace("#", "");
   const foreground = normalizeHexColor(config.foreground).replace("#", "");
   const text = config.text.trim() ? `?text=${encodeURIComponent(config.text.trim()).replace(/%20/g, "+")}` : "";
-  return `${config.width}x${config.height}/${background}/${foreground}.${config.format}${text}`;
+  return `${width}x${height}/${background}/${foreground}.${config.format}${text}`;
 }
 
 function buildPlaceholderSvg(config: PlaceholderConfig) {
   const background = normalizeHexColor(config.background);
   const foreground = normalizeHexColor(config.foreground);
-  const width = Math.max(1, Math.round(config.width));
-  const height = Math.max(1, Math.round(config.height));
+  const { width, height } = placeholderSize(config);
   const label = config.text.trim() || `${width}x${height}`;
   const fontSize = Math.max(12, Math.min(height * 0.24, width / Math.max(label.length * 0.58, 5)));
 
@@ -425,18 +432,53 @@ function buildPlaceholderDataUrl(config: PlaceholderConfig) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(buildPlaceholderSvg(config))}`;
 }
 
-function createPlaceholderOutput(config: PlaceholderConfig) {
+async function renderPlaceholderDataUrl(config: PlaceholderConfig) {
+  if (config.format === "svg") return buildPlaceholderDataUrl(config);
+
+  const { width, height } = placeholderSize(config);
+  const svg = buildPlaceholderSvg({ ...config, width, height });
+  const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  const image = new Image();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("The placeholder image could not be prepared."));
+      image.src = svgUrl;
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Image export is not available in this browser.");
+
+    if (config.format === "jpg") {
+      context.fillStyle = normalizeHexColor(config.background);
+      context.fillRect(0, 0, width, height);
+    }
+    context.drawImage(image, 0, 0, width, height);
+
+    const mimeType = config.format === "jpg" ? "image/jpeg" : "image/png";
+    return canvas.toDataURL(mimeType, 0.94);
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+async function createPlaceholderOutput(config: PlaceholderConfig) {
   const recipe = buildPlaceholderRecipe(config);
-  const dataUrl = buildPlaceholderDataUrl(config);
-  const alt = config.text.trim() || `${config.width}x${config.height} placeholder`;
+  const dataUrl = await renderPlaceholderDataUrl(config);
+  const { width, height } = placeholderSize(config);
+  const alt = config.text.trim() || `${width}x${height} placeholder`;
 
   return [
     `Recipe: ${recipe}`,
-    `Size: ${config.width} x ${config.height}`,
+    `Size: ${width} x ${height}`,
     `Format: ${config.format.toUpperCase()}`,
     "",
     "HTML:",
-    `<img src="${dataUrl}" width="${config.width}" height="${config.height}" alt="${escapeEntities(alt)}" />`,
+    `<img src="${dataUrl}" width="${width}" height="${height}" alt="${escapeEntities(alt)}" />`,
     "",
     "Markdown:",
     `![${alt}](${dataUrl})`,
@@ -458,36 +500,20 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 async function downloadPlaceholderImage(config: PlaceholderConfig) {
-  const width = Math.max(1, Math.round(config.width));
-  const height = Math.max(1, Math.round(config.height));
-  const svg = buildPlaceholderSvg({ ...config, width, height });
+  const { width, height } = placeholderSize(config);
+  const exportConfig = { ...config, width, height };
   const slug = config.text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "placeholder";
 
   if (config.format === "svg") {
+    const svg = buildPlaceholderSvg(exportConfig);
     downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${slug}-${width}x${height}.svg`);
     return;
   }
 
-  const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
-  const image = new Image();
-  await new Promise<void>((resolve, reject) => {
-    image.onload = () => resolve();
-    image.onerror = () => reject(new Error("The placeholder preview could not be prepared for download."));
-    image.src = svgUrl;
-  });
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Image export is not available in this browser.");
-  context.drawImage(image, 0, 0);
-  URL.revokeObjectURL(svgUrl);
-
   const mimeType = config.format === "jpg" ? "image/jpeg" : "image/png";
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((nextBlob) => (nextBlob ? resolve(nextBlob) : reject(new Error("The image could not be exported."))), mimeType, 0.94);
-  });
+  const response = await fetch(await renderPlaceholderDataUrl(exportConfig));
+  const blob = await response.blob();
+  if (blob.type !== mimeType) throw new Error("The image could not be exported in the selected format.");
   downloadBlob(blob, `${slug}-${width}x${height}.${config.format}`);
 }
 
@@ -601,6 +627,7 @@ export default function Home() {
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
   const generatedCron = buildCronExpression(cronConfig);
+  const placeholderDimensions = useMemo(() => placeholderSize(placeholderConfig), [placeholderConfig]);
   const placeholderRecipe = useMemo(() => buildPlaceholderRecipe(placeholderConfig), [placeholderConfig]);
   const placeholderPreview = useMemo(() => buildPlaceholderDataUrl(placeholderConfig), [placeholderConfig]);
   const visibleTools = useMemo(
@@ -612,15 +639,6 @@ export default function Home() {
       }),
     [category, query],
   );
-
-  useEffect(() => {
-    setActiveId(defaultToolId);
-    setInput(buildCronExpression({ preset: "Daily at noon", ...cronPresets["Daily at noon"] }));
-  }, []);
-
-  useEffect(() => {
-    if (activeId === "image") setInput(placeholderRecipe);
-  }, [activeId, placeholderRecipe]);
 
   function selectTool(tool: Tool) {
     setActiveId(tool.id);
@@ -652,6 +670,12 @@ export default function Home() {
       const nextSet = exists ? current.weekdaySet.filter((item) => item !== day) : [...current.weekdaySet, day];
       return { ...current, weekdaySet: nextSet, preset: "Custom" };
     });
+  }
+
+  function updatePlaceholderConfig(next: Partial<PlaceholderConfig>) {
+    const nextConfig = { ...placeholderConfig, ...next };
+    setPlaceholderConfig(nextConfig);
+    if (activeId === "image") setInput(buildPlaceholderRecipe(nextConfig));
   }
 
   async function runAction(action: string) {
@@ -708,9 +732,9 @@ export default function Home() {
       if (activeTool.id === "image") {
         if (action === "Download") {
           await downloadPlaceholderImage(placeholderConfig);
-          result = createPlaceholderOutput(placeholderConfig);
+          result = await createPlaceholderOutput(placeholderConfig);
         } else {
-          result = createPlaceholderOutput(placeholderConfig);
+          result = await createPlaceholderOutput(placeholderConfig);
         }
         setInput(placeholderRecipe);
       }
@@ -936,8 +960,12 @@ export default function Home() {
               <div className="placeholder-preview-header">
                 <span>Preview</span>
                 <code>{placeholderRecipe}</code>
+                <small>
+                  Exports at {placeholderDimensions.width} x {placeholderDimensions.height}px. Preview may be scaled to fit.
+                </small>
               </div>
               <div className="placeholder-canvas" style={{ aspectRatio: `${placeholderConfig.width} / ${placeholderConfig.height}` }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={placeholderPreview} alt={placeholderConfig.text || "Generated placeholder"} />
               </div>
             </div>
@@ -950,7 +978,7 @@ export default function Home() {
                   max="4000"
                   type="number"
                   value={placeholderConfig.width}
-                  onChange={(event) => setPlaceholderConfig((current) => ({ ...current, width: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) }))}
+                  onChange={(event) => updatePlaceholderConfig({ width: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) })}
                 />
               </label>
 
@@ -961,23 +989,23 @@ export default function Home() {
                   max="4000"
                   type="number"
                   value={placeholderConfig.height}
-                  onChange={(event) => setPlaceholderConfig((current) => ({ ...current, height: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) }))}
+                  onChange={(event) => updatePlaceholderConfig({ height: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) })}
                 />
               </label>
 
               <label>
                 Background
-                <input type="color" value={placeholderConfig.background} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, background: event.target.value }))} />
+                <input type="color" value={placeholderConfig.background} onChange={(event) => updatePlaceholderConfig({ background: event.target.value })} />
               </label>
 
               <label>
                 Text color
-                <input type="color" value={placeholderConfig.foreground} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, foreground: event.target.value }))} />
+                <input type="color" value={placeholderConfig.foreground} onChange={(event) => updatePlaceholderConfig({ foreground: event.target.value })} />
               </label>
 
               <label>
                 Format
-                <select value={placeholderConfig.format} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, format: event.target.value as ImageFormat }))}>
+                <select value={placeholderConfig.format} onChange={(event) => updatePlaceholderConfig({ format: event.target.value as ImageFormat })}>
                   <option value="png">PNG</option>
                   <option value="jpg">JPG</option>
                   <option value="svg">SVG</option>
@@ -986,7 +1014,7 @@ export default function Home() {
 
               <label className="image-text-control">
                 Text
-                <input value={placeholderConfig.text} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, text: event.target.value }))} placeholder="Text shown in the image" />
+                <input value={placeholderConfig.text} onChange={(event) => updatePlaceholderConfig({ text: event.target.value })} placeholder="Text shown in the image" />
               </label>
             </div>
 
@@ -997,7 +1025,7 @@ export default function Home() {
                 ["HD", 1280, 720],
                 ["Desktop", 1920, 1080],
               ].map(([label, width, height]) => (
-                <button key={label} onClick={() => setPlaceholderConfig((current) => ({ ...current, width: Number(width), height: Number(height) }))}>
+                <button key={label} onClick={() => updatePlaceholderConfig({ width: Number(width), height: Number(height) })}>
                   <strong>{label}</strong>
                   <span>
                     {width}x{height}

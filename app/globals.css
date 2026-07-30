@@ -402,6 +402,12 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.placeholder-preview-header small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .placeholder-preview-header code {
   overflow-x: auto;
   border: 1px solid var(--line);

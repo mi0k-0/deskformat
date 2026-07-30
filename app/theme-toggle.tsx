@@ -7,14 +7,12 @@ type Theme = "light" | "dark";
 const themeStorageKey = "deskformat-theme";
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>("light");
-
-  useEffect(() => {
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") return "light";
     const savedTheme = window.localStorage.getItem(themeStorageKey);
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const nextTheme = savedTheme === "light" || savedTheme === "dark" ? savedTheme : prefersDark ? "dark" : "light";
-    setTheme(nextTheme);
-  }, []);
+    return savedTheme === "light" || savedTheme === "dark" ? savedTheme : prefersDark ? "dark" : "light";
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;

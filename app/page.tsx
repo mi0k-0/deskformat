@@ -1,8 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  createQrAssets,
+  extendedTools,
+  getLineDiff,
+  markdownDocument,
+  runExtendedTool,
+  type ExtendedToolId,
+  type QrFormat,
+  type SqlDialect,
+  type TestDataKind,
+  type TimestampZone,
+} from "./extended-tools";
 
 type ToolId =
+  | ExtendedToolId
   | "image"
   | "json"
   | "xml"
@@ -69,6 +82,7 @@ const tools: Tool[] = [
     sample: "600x400 / #0f766e / #ffffff / DeskFormat",
     quickActions: ["Generate", "Download"],
   },
+  ...extendedTools,
   {
     id: "json",
     name: "JSON Studio",
@@ -624,12 +638,23 @@ export default function Home() {
     ...cronPresets["Daily at noon"],
   });
   const [placeholderConfig, setPlaceholderConfig] = useState<PlaceholderConfig>(defaultPlaceholder);
+  const [timestampZone, setTimestampZone] = useState<TimestampZone>("local");
+  const [testDataKind, setTestDataKind] = useState<TestDataKind>("records");
+  const [testDataCount, setTestDataCount] = useState(5);
+  const [qrFormat, setQrFormat] = useState<QrFormat>("png");
+  const [qrSize, setQrSize] = useState(320);
+  const [qrAssets, setQrAssets] = useState<Awaited<ReturnType<typeof createQrAssets>> | null>(null);
+  const [diffRight, setDiffRight] = useState("DeskFormat keeps useful tools nearby.\nThis line stays the same.\nThis line was added.");
+  const [sqlDialect, setSqlDialect] = useState<SqlDialect>("sql");
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
+  const isExtendedTool = extendedTools.some((tool) => tool.id === activeTool.id);
   const generatedCron = buildCronExpression(cronConfig);
   const placeholderDimensions = useMemo(() => placeholderSize(placeholderConfig), [placeholderConfig]);
   const placeholderRecipe = useMemo(() => buildPlaceholderRecipe(placeholderConfig), [placeholderConfig]);
   const placeholderPreview = useMemo(() => buildPlaceholderDataUrl(placeholderConfig), [placeholderConfig]);
+  const diffParts = useMemo(() => getLineDiff(input, diffRight), [input, diffRight]);
+  const markdownPreview = useMemo(() => markdownDocument(input), [input]);
   const visibleTools = useMemo(
     () =>
       tools.filter((tool) => {
@@ -639,6 +664,24 @@ export default function Home() {
       }),
     [category, query],
   );
+
+  useEffect(() => {
+    if (activeId !== "qr" || !input.trim()) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      void createQrAssets(input, qrSize)
+        .then((assets) => {
+          if (current) setQrAssets(assets);
+        })
+        .catch(() => {
+          if (current) setQrAssets(null);
+        });
+    }, 180);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [activeId, input, qrSize]);
 
   function selectTool(tool: Tool) {
     setActiveId(tool.id);
@@ -739,6 +782,40 @@ export default function Home() {
         setInput(placeholderRecipe);
       }
 
+      if (activeTool.id === "diff") {
+        const added = diffParts.filter((part) => part.added).reduce((total, part) => total + (part.count ?? 0), 0);
+        const removed = diffParts.filter((part) => part.removed).reduce((total, part) => total + (part.count ?? 0), 0);
+        result = [
+          `${added} added line${added === 1 ? "" : "s"}, ${removed} removed line${removed === 1 ? "" : "s"}.`,
+          "",
+          ...diffParts.flatMap((part) =>
+            part.value
+              .replace(/\n$/, "")
+              .split("\n")
+              .map((line) => `${part.added ? "+ " : part.removed ? "- " : "  "}${line}`),
+          ),
+        ].join("\n");
+      } else if (activeTool.id === "qr") {
+        const assets = await createQrAssets(input, qrSize);
+        setQrAssets(assets);
+        if (action === "Download") {
+          if (qrFormat === "svg") {
+            downloadBlob(new Blob([assets.svg], { type: "image/svg+xml" }), "deskformat-qr.svg");
+          } else {
+            const blob = await fetch(assets.png).then((response) => response.blob());
+            downloadBlob(blob, "deskformat-qr.png");
+          }
+        }
+        result = qrFormat === "svg" ? assets.svg : `PNG QR code ready at ${assets.width} x ${assets.width}px.`;
+      } else if (isExtendedTool) {
+        result = await runExtendedTool(activeTool.id as ExtendedToolId, action, input, {
+          timestampZone,
+          testDataKind,
+          testDataCount,
+          sqlDialect,
+        });
+      }
+
       setOutput(result);
       setNotice(`${action} complete.`);
     } catch (error) {
@@ -829,6 +906,123 @@ export default function Home() {
               Flags
               <input value={regexFlags} onChange={(event) => setRegexFlags(event.target.value)} />
             </label>
+          </section>
+        )}
+
+        {activeTool.id === "timestamp" && (
+          <section className="tool-options compact-options" aria-label="Timestamp timezone">
+            <span>Interpret dates as</span>
+            <div className="segmented-control">
+              {(["local", "utc"] as TimestampZone[]).map((zone) => (
+                <button className={timestampZone === zone ? "selected" : ""} key={zone} onClick={() => setTimestampZone(zone)}>
+                  {zone === "local" ? "Local time" : "UTC"}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {activeTool.id === "test-data" && (
+          <section className="tool-options" aria-label="Test data options">
+            <label>
+              Data type
+              <select value={testDataKind} onChange={(event) => setTestDataKind(event.target.value as TestDataKind)}>
+                <option value="names">Names</option>
+                <option value="emails">Emails</option>
+                <option value="addresses">Addresses</option>
+                <option value="paragraphs">Paragraphs</option>
+                <option value="records">JSON records</option>
+              </select>
+            </label>
+            <label>
+              Quantity
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={testDataCount}
+                onChange={(event) => setTestDataCount(Math.max(1, Math.min(100, Number(event.target.value) || 1)))}
+              />
+            </label>
+          </section>
+        )}
+
+        {activeTool.id === "qr" && (
+          <section className="qr-builder" aria-label="QR code options and preview">
+            <div className="qr-preview">
+              {/* eslint-disable-next-line @next/next/no-img-element -- generated browser-local data URL */}
+              {qrAssets ? <img src={qrAssets.png} alt="Generated QR code preview" /> : <span>Enter text to generate a QR code.</span>}
+            </div>
+            <div className="tool-options">
+              <label>
+                Download format
+                <select value={qrFormat} onChange={(event) => setQrFormat(event.target.value as QrFormat)}>
+                  <option value="png">PNG</option>
+                  <option value="svg">SVG</option>
+                </select>
+              </label>
+              <label>
+                Size
+                <select value={qrSize} onChange={(event) => setQrSize(Number(event.target.value))}>
+                  <option value="256">256 px</option>
+                  <option value="320">320 px</option>
+                  <option value="512">512 px</option>
+                  <option value="1024">1024 px</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        )}
+
+        {activeTool.id === "sql" && (
+          <section className="tool-options compact-options" aria-label="SQL dialect">
+            <label>
+              SQL dialect
+              <select value={sqlDialect} onChange={(event) => setSqlDialect(event.target.value as SqlDialect)}>
+                <option value="sql">Standard SQL</option>
+                <option value="postgresql">PostgreSQL</option>
+                <option value="mysql">MySQL / MariaDB</option>
+                <option value="sqlite">SQLite</option>
+                <option value="bigquery">BigQuery</option>
+                <option value="transactsql">SQL Server</option>
+              </select>
+            </label>
+          </section>
+        )}
+
+        {activeTool.id === "diff" && (
+          <section className="comparison-workspace" aria-label="Text comparison">
+            <label className="comparison-input">
+              <span>Original text</span>
+              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+            </label>
+            <label className="comparison-input">
+              <span>Updated text</span>
+              <textarea value={diffRight} onChange={(event) => setDiffRight(event.target.value)} spellCheck={false} />
+            </label>
+            <div className="diff-preview" aria-label="Highlighted differences">
+              <span className="panel-label">Changes</span>
+              <pre>
+                {diffParts.map((part, index) => (
+                  <span className={part.added ? "diff-added" : part.removed ? "diff-removed" : "diff-same"} key={`${index}-${part.value.length}`}>
+                    {part.value}
+                  </span>
+                ))}
+              </pre>
+            </div>
+          </section>
+        )}
+
+        {activeTool.id === "markdown" && (
+          <section className="markdown-preview" aria-label="Rendered Markdown preview">
+            <label className="comparison-input">
+              <span>Markdown</span>
+              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+            </label>
+            <div className="markdown-rendered">
+              <span className="panel-label">Rendered preview</span>
+              <iframe title="Rendered Markdown" sandbox="" srcDoc={markdownPreview} />
+            </div>
           </section>
         )}
 
@@ -1044,16 +1238,25 @@ export default function Home() {
           </section>
         )}
 
-        <section className="editors">
-          <label className="editor-panel">
-            <span>Input</span>
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+        {activeTool.id !== "diff" && activeTool.id !== "markdown" && (
+          <section className="editors">
+            <label className="editor-panel">
+              <span>Input</span>
+              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+            </label>
+            <label className="editor-panel output-panel">
+              <span>Output</span>
+              <textarea value={output} readOnly placeholder="Your transformed result appears here." spellCheck={false} />
+            </label>
+          </section>
+        )}
+
+        {activeTool.id === "markdown" && output && (
+          <label className="editor-panel markdown-html-output">
+            <span>Generated HTML</span>
+            <textarea value={output} readOnly spellCheck={false} />
           </label>
-          <label className="editor-panel output-panel">
-            <span>Output</span>
-            <textarea value={output} readOnly placeholder="Your transformed result appears here." spellCheck={false} />
-          </label>
-        </section>
+        )}
 
         <section className="insight-strip" aria-label="Quick stats">
           <div>

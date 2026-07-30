@@ -75,9 +75,12 @@ button:disabled {
 }
 
 .sidebar {
+  position: sticky;
+  top: 18px;
   display: flex;
   flex-direction: column;
   gap: 18px;
+  height: calc(100vh - 36px);
   overflow: hidden;
   border-radius: 8px;
   padding: 18px;
@@ -501,6 +504,187 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+.tool-options,
+.qr-builder,
+.comparison-workspace,
+.markdown-preview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  padding: 12px;
+}
+
+.tool-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 220px));
+  gap: 12px;
+  align-items: end;
+}
+
+.tool-options.compact-options {
+  grid-template-columns: minmax(220px, 360px);
+}
+
+.tool-options > span,
+.tool-options label,
+.comparison-input,
+.panel-label {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.tool-options label,
+.comparison-input {
+  display: grid;
+  gap: 6px;
+}
+
+.tool-options input,
+.tool-options select {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--field, white);
+  color: var(--field-text, var(--ink));
+  outline: none;
+  padding: 0 12px;
+}
+
+.tool-options input:focus,
+.tool-options select:focus,
+.comparison-input textarea:focus {
+  border-color: rgba(15, 118, 110, 0.72);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.segmented-control {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.segmented-control button {
+  min-height: 42px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: var(--field, white);
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.segmented-control button:last-child {
+  border-right: 0;
+}
+
+.segmented-control button.selected {
+  background: var(--teal);
+  color: white;
+}
+
+.qr-builder {
+  display: grid;
+  grid-template-columns: 220px minmax(280px, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.qr-preview {
+  display: grid;
+  width: 220px;
+  aspect-ratio: 1;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdfa;
+  color: var(--muted);
+  padding: 12px;
+  text-align: center;
+}
+
+.qr-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.comparison-workspace {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.comparison-input textarea,
+.diff-preview pre {
+  width: 100%;
+  min-height: 220px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--code-bg, #101719);
+  color: var(--code-text, #f5f3ea);
+  outline: none;
+  padding: 14px;
+  font-family: var(--font-geist-mono), "SFMono-Regular", Consolas, monospace;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.comparison-input textarea {
+  resize: vertical;
+}
+
+.diff-preview {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+}
+
+.diff-preview pre span {
+  display: block;
+  margin: 0 -14px;
+  padding: 0 14px;
+}
+
+.diff-added {
+  background: rgba(38, 150, 91, 0.3);
+  color: #c9f6db;
+}
+
+.diff-removed {
+  background: rgba(200, 75, 49, 0.3);
+  color: #ffd8cf;
+}
+
+.markdown-preview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.markdown-rendered {
+  display: grid;
+  gap: 6px;
+}
+
+.markdown-preview iframe {
+  width: 100%;
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field, white);
+}
+
+.markdown-html-output {
+  min-height: 280px;
+}
+
 .editors {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -575,6 +759,8 @@ button:disabled {
   }
 
   .sidebar {
+    position: static;
+    height: auto;
     max-height: none;
   }
 
@@ -585,6 +771,9 @@ button:disabled {
   .topbar,
   .cron-controls,
   .image-builder,
+  .qr-builder,
+  .comparison-workspace,
+  .markdown-preview,
   .editors {
     grid-template-columns: 1fr;
   }
@@ -604,6 +793,7 @@ button:disabled {
   .weekday-grid,
   .image-controls,
   .image-presets,
+  .tool-options,
   .insight-strip {
     grid-template-columns: 1fr;
   }

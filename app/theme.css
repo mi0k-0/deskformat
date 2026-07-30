@@ -54,10 +54,14 @@ body {
 .regex-panel input,
 .cron-controls input,
 .cron-controls select,
+.image-controls input,
+.image-controls select,
 .category-tabs button,
 .utility-action,
 .weekday-grid button,
-.cron-result {
+.cron-result,
+.placeholder-preview-header code,
+.image-presets button {
   background: var(--field);
   color: var(--field-text);
 }
@@ -80,8 +84,24 @@ body {
 }
 
 .regex-panel,
-.cron-builder {
+.cron-builder,
+.image-builder {
   background: var(--panel-strong);
+}
+
+.placeholder-canvas {
+  background:
+    linear-gradient(45deg, rgba(154, 171, 165, 0.16) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(154, 171, 165, 0.16) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(154, 171, 165, 0.16) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(154, 171, 165, 0.16) 75%),
+    var(--field);
+  background-position:
+    0 0,
+    0 12px,
+    12px -12px,
+    -12px 0;
+  background-size: 24px 24px;
 }
 
 .editor-panel textarea {

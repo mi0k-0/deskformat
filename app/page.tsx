@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 type ToolId =
+  | "image"
   | "json"
   | "xml"
   | "html"
@@ -40,6 +41,17 @@ type CronConfig = {
   year: string;
 };
 
+type ImageFormat = "png" | "jpg" | "svg";
+
+type PlaceholderConfig = {
+  width: number;
+  height: number;
+  background: string;
+  foreground: string;
+  format: ImageFormat;
+  text: string;
+};
+
 const tools: Tool[] = [
   {
     id: "cron",
@@ -48,6 +60,14 @@ const tools: Tool[] = [
     description: "Build and explain Quartz cron expressions with seven-field output.",
     sample: "0 0 12 ? * MON-FRI *",
     quickActions: ["Generate", "Describe"],
+  },
+  {
+    id: "image",
+    name: "Placeholder Image",
+    category: "Generators",
+    description: "Create local dummy images for mockups, wireframes, and test layouts.",
+    sample: "600x400 / #0f766e / #ffffff / DeskFormat",
+    quickActions: ["Generate", "Download"],
   },
   {
     id: "json",
@@ -243,6 +263,15 @@ const cronPresets: Record<string, Omit<CronConfig, "preset">> = {
   },
 };
 
+const defaultPlaceholder: PlaceholderConfig = {
+  width: 600,
+  height: 400,
+  background: "#0f766e",
+  foreground: "#ffffff",
+  format: "png",
+  text: "DeskFormat",
+};
+
 function prettyXml(value: string) {
   const compact = value.replace(/>\s+</g, "><").trim();
   if (!compact) return "";
@@ -358,6 +387,110 @@ function convertColor(value: string) {
   return [`HEX #${match[1]}${match[2]}${match[3]}`.toUpperCase(), `RGB ${r}, ${g}, ${b}`, `HSL ${h}, ${s}%, ${l}%`].join("\n");
 }
 
+function escapeSvgText(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function normalizeHexColor(value: string) {
+  const clean = value.trim().replace(/^#/, "");
+  if (/^[a-f\d]{3}$/i.test(clean)) {
+    return `#${clean
+      .split("")
+      .map((part) => part + part)
+      .join("")}`.toLowerCase();
+  }
+  if (/^[a-f\d]{6}$/i.test(clean)) return `#${clean}`.toLowerCase();
+  throw new Error("Use a 3-digit or 6-digit hex color.");
+}
+
+function buildPlaceholderRecipe(config: PlaceholderConfig) {
+  const background = normalizeHexColor(config.background).replace("#", "");
+  const foreground = normalizeHexColor(config.foreground).replace("#", "");
+  const text = config.text.trim() ? `?text=${encodeURIComponent(config.text.trim()).replace(/%20/g, "+")}` : "";
+  return `${config.width}x${config.height}/${background}/${foreground}.${config.format}${text}`;
+}
+
+function buildPlaceholderSvg(config: PlaceholderConfig) {
+  const background = normalizeHexColor(config.background);
+  const foreground = normalizeHexColor(config.foreground);
+  const width = Math.max(1, Math.round(config.width));
+  const height = Math.max(1, Math.round(config.height));
+  const label = config.text.trim() || `${width}x${height}`;
+  const fontSize = Math.max(12, Math.min(height * 0.24, width / Math.max(label.length * 0.58, 5)));
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeSvgText(label)}"><rect width="100%" height="100%" fill="${background}"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="${foreground}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize.toFixed(1)}" font-weight="700">${escapeSvgText(label)}</text></svg>`;
+}
+
+function buildPlaceholderDataUrl(config: PlaceholderConfig) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(buildPlaceholderSvg(config))}`;
+}
+
+function createPlaceholderOutput(config: PlaceholderConfig) {
+  const recipe = buildPlaceholderRecipe(config);
+  const dataUrl = buildPlaceholderDataUrl(config);
+  const alt = config.text.trim() || `${config.width}x${config.height} placeholder`;
+
+  return [
+    `Recipe: ${recipe}`,
+    `Size: ${config.width} x ${config.height}`,
+    `Format: ${config.format.toUpperCase()}`,
+    "",
+    "HTML:",
+    `<img src="${dataUrl}" width="${config.width}" height="${config.height}" alt="${escapeEntities(alt)}" />`,
+    "",
+    "Markdown:",
+    `![${alt}](${dataUrl})`,
+    "",
+    "Data URL:",
+    dataUrl,
+  ].join("\n");
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function downloadPlaceholderImage(config: PlaceholderConfig) {
+  const width = Math.max(1, Math.round(config.width));
+  const height = Math.max(1, Math.round(config.height));
+  const svg = buildPlaceholderSvg({ ...config, width, height });
+  const slug = config.text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "placeholder";
+
+  if (config.format === "svg") {
+    downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${slug}-${width}x${height}.svg`);
+    return;
+  }
+
+  const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  const image = new Image();
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("The placeholder preview could not be prepared for download."));
+    image.src = svgUrl;
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Image export is not available in this browser.");
+  context.drawImage(image, 0, 0);
+  URL.revokeObjectURL(svgUrl);
+
+  const mimeType = config.format === "jpg" ? "image/jpeg" : "image/png";
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((nextBlob) => (nextBlob ? resolve(nextBlob) : reject(new Error("The image could not be exported."))), mimeType, 0.94);
+  });
+  downloadBlob(blob, `${slug}-${width}x${height}.${config.format}`);
+}
+
 function matchRegex(pattern: string, flags: string, sample: string) {
   const regex = new RegExp(pattern, flags);
   const matches = Array.from(sample.matchAll(regex.global ? regex : new RegExp(regex.source, `${regex.flags}g`)));
@@ -464,9 +597,12 @@ export default function Home() {
     preset: "Daily at noon",
     ...cronPresets["Daily at noon"],
   });
+  const [placeholderConfig, setPlaceholderConfig] = useState<PlaceholderConfig>(defaultPlaceholder);
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
   const generatedCron = buildCronExpression(cronConfig);
+  const placeholderRecipe = useMemo(() => buildPlaceholderRecipe(placeholderConfig), [placeholderConfig]);
+  const placeholderPreview = useMemo(() => buildPlaceholderDataUrl(placeholderConfig), [placeholderConfig]);
   const visibleTools = useMemo(
     () =>
       tools.filter((tool) => {
@@ -482,9 +618,13 @@ export default function Home() {
     setInput(buildCronExpression({ preset: "Daily at noon", ...cronPresets["Daily at noon"] }));
   }, []);
 
+  useEffect(() => {
+    if (activeId === "image") setInput(placeholderRecipe);
+  }, [activeId, placeholderRecipe]);
+
   function selectTool(tool: Tool) {
     setActiveId(tool.id);
-    setInput(tool.id === "cron" ? generatedCron : tool.sample);
+    setInput(tool.id === "cron" ? generatedCron : tool.id === "image" ? placeholderRecipe : tool.sample);
     setOutput("");
     setNotice(`${tool.name} loaded.`);
   }
@@ -563,6 +703,16 @@ export default function Home() {
         const expression = action === "Generate" ? generatedCron : input;
         result = action === "Generate" ? `${expression}\n\n${describeCronExpression(expression)}` : describeCronExpression(expression);
         if (action === "Generate") setInput(expression);
+      }
+
+      if (activeTool.id === "image") {
+        if (action === "Download") {
+          await downloadPlaceholderImage(placeholderConfig);
+          result = createPlaceholderOutput(placeholderConfig);
+        } else {
+          result = createPlaceholderOutput(placeholderConfig);
+        }
+        setInput(placeholderRecipe);
       }
 
       setOutput(result);
@@ -774,6 +924,84 @@ export default function Home() {
               {Object.entries(weekdayNames).map(([value, name]) => (
                 <button className={cronConfig.weekdaySet.includes(value) ? "selected" : ""} key={value} onClick={() => toggleWeekday(value)}>
                   {name.slice(0, 3)}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {activeTool.id === "image" && (
+          <section className="image-builder" aria-label="Placeholder image generator">
+            <div className="placeholder-preview">
+              <div className="placeholder-preview-header">
+                <span>Preview</span>
+                <code>{placeholderRecipe}</code>
+              </div>
+              <div className="placeholder-canvas" style={{ aspectRatio: `${placeholderConfig.width} / ${placeholderConfig.height}` }}>
+                <img src={placeholderPreview} alt={placeholderConfig.text || "Generated placeholder"} />
+              </div>
+            </div>
+
+            <div className="image-controls">
+              <label>
+                Width
+                <input
+                  min="1"
+                  max="4000"
+                  type="number"
+                  value={placeholderConfig.width}
+                  onChange={(event) => setPlaceholderConfig((current) => ({ ...current, width: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) }))}
+                />
+              </label>
+
+              <label>
+                Height
+                <input
+                  min="1"
+                  max="4000"
+                  type="number"
+                  value={placeholderConfig.height}
+                  onChange={(event) => setPlaceholderConfig((current) => ({ ...current, height: Math.max(1, Math.min(4000, Number(event.target.value) || 1)) }))}
+                />
+              </label>
+
+              <label>
+                Background
+                <input type="color" value={placeholderConfig.background} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, background: event.target.value }))} />
+              </label>
+
+              <label>
+                Text color
+                <input type="color" value={placeholderConfig.foreground} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, foreground: event.target.value }))} />
+              </label>
+
+              <label>
+                Format
+                <select value={placeholderConfig.format} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, format: event.target.value as ImageFormat }))}>
+                  <option value="png">PNG</option>
+                  <option value="jpg">JPG</option>
+                  <option value="svg">SVG</option>
+                </select>
+              </label>
+
+              <label className="image-text-control">
+                Text
+                <input value={placeholderConfig.text} onChange={(event) => setPlaceholderConfig((current) => ({ ...current, text: event.target.value }))} placeholder="Text shown in the image" />
+              </label>
+            </div>
+
+            <div className="image-presets" aria-label="Common placeholder sizes">
+              {[
+                ["Ad tile", 300, 250],
+                ["Card", 600, 400],
+                ["HD", 1280, 720],
+                ["Desktop", 1920, 1080],
+              ].map(([label, width, height]) => (
+                <button key={label} onClick={() => setPlaceholderConfig((current) => ({ ...current, width: Number(width), height: Number(height) }))}>
+                  <strong>{label}</strong>
+                  <span>
+                    {width}x{height}
+                  </span>
                 </button>
               ))}
             </div>

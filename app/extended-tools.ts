@@ -9,6 +9,8 @@ export type ExtendedToolId =
   | "timestamp"
   | "test-data"
   | "qr"
+  | "image-compressor"
+  | "secrets"
   | "diff"
   | "data-converter"
   | "yaml"
@@ -50,6 +52,22 @@ export const extendedTools = [
     description: "Turn text or a URL into a downloadable QR code in PNG or SVG.",
     sample: "https://deskformat.example",
     quickActions: ["Generate", "Download"],
+  },
+  {
+    id: "image-compressor" as const,
+    name: "Image Compressor",
+    category: "Images",
+    description: "Compress, resize, and convert images to WebP, JPG, or PNG locally.",
+    sample: "",
+    quickActions: [],
+  },
+  {
+    id: "secrets" as const,
+    name: "Password & Token Generator",
+    category: "Security",
+    description: "Create strong passwords and cryptographically secure tokens on this device.",
+    sample: "",
+    quickActions: [],
   },
   {
     id: "diff" as const,

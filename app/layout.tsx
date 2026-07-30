@@ -21,6 +21,7 @@ const description =
 export const metadata: Metadata = {
   title,
   description,
+  manifest: "/manifest.webmanifest",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+/* eslint-disable @next/next/no-img-element */
+
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   buildTextDiffRows,
   createQrAssets,
@@ -13,6 +15,7 @@ import {
   type TestDataKind,
   type TimestampZone,
 } from "./extended-tools";
+import { ImageCompressor, OfflineInstall, SecretGenerator } from "./power-tools";
 
 type DiffPart = { value: string; added?: boolean; removed?: boolean };
 
@@ -181,6 +184,8 @@ const tools: Tool[] = [
 
 const categories = ["All", ...Array.from(new Set(tools.map((tool) => tool.category)))];
 const defaultToolId: ToolId = "cron";
+const favoriteStorageKey = "deskformat-favorites";
+const recentStorageKey = "deskformat-recent";
 const weekdayNames: Record<string, string> = {
   SUN: "Sunday",
   MON: "Monday",
@@ -665,6 +670,11 @@ export default function Home() {
   const [diffHideUnchanged, setDiffHideUnchanged] = useState(false);
   const [diffChangeCursor, setDiffChangeCursor] = useState(0);
   const [sqlDialect, setSqlDialect] = useState<SqlDialect>("sql");
+  const [favorites, setFavorites] = useState<ToolId[]>([]);
+  const [recentTools, setRecentTools] = useState<ToolId[]>([]);
+  const [savedToolsReady, setSavedToolsReady] = useState(false);
+  const [paneSplit, setPaneSplit] = useState(50);
+  const [workspaceDragging, setWorkspaceDragging] = useState(false);
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
   const isExtendedTool = extendedTools.some((tool) => tool.id === activeTool.id);
@@ -695,15 +705,22 @@ export default function Home() {
     [diffRows],
   );
   const markdownPreview = useMemo(() => markdownDocument(input), [input]);
-  const visibleTools = useMemo(
-    () =>
-      tools.filter((tool) => {
+  const visibleTools = useMemo(() => {
+    const filtered = tools.filter((tool) => {
         const matchesCategory = category === "All" || tool.category === category;
         const searchable = `${tool.name} ${tool.category} ${tool.description}`.toLowerCase();
         return matchesCategory && searchable.includes(query.toLowerCase());
-      }),
-    [category, query],
-  );
+      });
+    const rank = (tool: Tool) => {
+      if (tool.id === "cron") return -10000;
+      const favoriteIndex = favorites.indexOf(tool.id);
+      if (favoriteIndex >= 0) return -1000 + favoriteIndex;
+      const recentIndex = recentTools.indexOf(tool.id);
+      if (recentIndex >= 0) return -500 + recentIndex;
+      return tools.indexOf(tool);
+    };
+    return filtered.sort((left, right) => rank(left) - rank(right));
+  }, [category, favorites, query, recentTools]);
 
   useEffect(() => {
     if (activeId !== "qr" || !input.trim()) return;
@@ -723,12 +740,78 @@ export default function Home() {
     };
   }, [activeId, input, qrSize]);
 
+  useEffect(() => {
+    const validIds = new Set(tools.map((tool) => tool.id));
+    const readIds = (key: string) => {
+      try {
+        const value = JSON.parse(window.localStorage.getItem(key) ?? "[]");
+        return Array.isArray(value) ? value.filter((id): id is ToolId => validIds.has(id as ToolId)) : [];
+      } catch {
+        return [];
+      }
+    };
+    const timer = window.setTimeout(() => {
+      setFavorites(readIds(favoriteStorageKey));
+      setRecentTools(readIds(recentStorageKey));
+      setSavedToolsReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!savedToolsReady) return;
+    window.localStorage.setItem(favoriteStorageKey, JSON.stringify(favorites));
+    window.localStorage.setItem(recentStorageKey, JSON.stringify(recentTools));
+  }, [favorites, recentTools, savedToolsReady]);
+
   function selectTool(tool: Tool) {
     setActiveId(tool.id);
     setInput(tool.id === "cron" ? generatedCron : tool.id === "image" ? placeholderRecipe : tool.sample);
     setOutput("");
+    setRecentTools((current) => [tool.id, ...current.filter((id) => id !== tool.id)].slice(0, 5));
     if (tool.id === "diff") setDiffCompared(false);
     setNotice(`${tool.name} loaded.`);
+  }
+
+  function toggleFavorite(toolId: ToolId) {
+    setFavorites((current) =>
+      current.includes(toolId) ? current.filter((id) => id !== toolId) : [...current, toolId],
+    );
+  }
+
+  async function loadWorkspaceFile(file: File | undefined) {
+    if (!file) return;
+    if (activeId === "image-compressor" || activeId === "image" || activeId === "secrets") return;
+    try {
+      const value = await file.text();
+      setInput(value);
+      if (activeId === "diff") setDiffCompared(false);
+      setNotice(`${file.name} loaded locally.`);
+    } catch {
+      setNotice("That file could not be read as text.");
+    }
+  }
+
+  function beginPaneResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const bounds = container.getBoundingClientRect();
+    const move = (pointerEvent: PointerEvent) => {
+      const percentage = ((pointerEvent.clientX - bounds.left) / bounds.width) * 100;
+      setPaneSplit(Math.max(25, Math.min(75, percentage)));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }
+
+  function updatePowerToolNotice(message: string, nextOutput?: string) {
+    setNotice(message);
+    if (nextOutput !== undefined) setOutput(nextOutput);
   }
 
   function updateCronConfig(next: Partial<CronConfig>) {
@@ -932,16 +1015,43 @@ export default function Home() {
 
         <div className="tool-list">
           {visibleTools.map((tool) => (
-            <button className={`tool-card ${tool.id === activeId ? "selected" : ""}`} key={tool.id} onClick={() => selectTool(tool)}>
-              <span>{tool.category}</span>
-              <strong>{tool.name}</strong>
-              <small>{tool.description}</small>
-            </button>
+            <div className={`tool-card ${tool.id === activeId ? "selected" : ""}`} key={tool.id}>
+              <button className="tool-select" onClick={() => selectTool(tool)}>
+                <span>{tool.category}</span>
+                <strong>{tool.name}</strong>
+                <small>{tool.description}</small>
+              </button>
+              <button
+                className={`favorite-button ${favorites.includes(tool.id) ? "selected" : ""}`}
+                aria-label={`${favorites.includes(tool.id) ? "Remove" : "Add"} ${tool.name} ${favorites.includes(tool.id) ? "from" : "to"} favorites`}
+                title={favorites.includes(tool.id) ? "Remove favorite" : "Add favorite"}
+                onClick={() => toggleFavorite(tool.id)}
+              >
+                {favorites.includes(tool.id) ? "★" : "☆"}
+              </button>
+              {recentTools.includes(tool.id) && !favorites.includes(tool.id) && tool.id !== "cron" && <span className="recent-badge">Recent</span>}
+            </div>
           ))}
         </div>
+        <OfflineInstall />
       </aside>
 
-      <section className="workspace">
+      <section
+        className="workspace"
+        onDragEnter={(event) => {
+          if (event.dataTransfer.types.includes("Files")) setWorkspaceDragging(true);
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setWorkspaceDragging(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setWorkspaceDragging(false);
+          void loadWorkspaceFile(event.dataTransfer.files[0]);
+        }}
+      >
+        {workspaceDragging && activeId !== "image-compressor" && <div className="drop-overlay">Drop file to load it locally</div>}
         <header className="topbar">
           <div>
             <p className="eyebrow">{activeTool.category}</p>
@@ -951,7 +1061,7 @@ export default function Home() {
           <div className="status">{notice}</div>
         </header>
 
-        {activeTool.id !== "diff" && (
+        {activeTool.id !== "diff" && activeTool.id !== "image-compressor" && activeTool.id !== "secrets" && (
           <section className="action-row" aria-label="Actions">
             {activeTool.quickActions.map((action) => (
               <button className="primary-action" key={action} onClick={() => void runAction(action)}>
@@ -979,6 +1089,10 @@ export default function Home() {
             </label>
           </section>
         )}
+
+        {activeTool.id === "image-compressor" && <ImageCompressor onNotice={updatePowerToolNotice} />}
+
+        {activeTool.id === "secrets" && <SecretGenerator onNotice={updatePowerToolNotice} />}
 
         {activeTool.id === "timestamp" && (
           <section className="tool-options compact-options" aria-label="Timestamp timezone">
@@ -1021,7 +1135,6 @@ export default function Home() {
         {activeTool.id === "qr" && (
           <section className="qr-builder" aria-label="QR code options and preview">
             <div className="qr-preview">
-              {/* eslint-disable-next-line @next/next/no-img-element -- generated browser-local data URL */}
               {qrAssets ? <img src={qrAssets.png} alt="Generated QR code preview" /> : <span>Enter text to generate a QR code.</span>}
             </div>
             <div className="tool-options">
@@ -1149,8 +1262,20 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <section className="diff-input-workspace" aria-label="Text comparison">
-              <div className="diff-editor-card">
+            <section
+              className="diff-input-workspace resizable-panes"
+              aria-label="Text comparison"
+              style={{ gridTemplateColumns: `minmax(0, ${paneSplit}fr) 10px minmax(0, ${100 - paneSplit}fr)` }}
+            >
+              <div
+                className="diff-editor-card"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void loadDiffFile(event.dataTransfer.files[0], "left");
+                }}
+              >
                 <header>
                   <strong>Original text</strong>
                   <label className="diff-file-button">
@@ -1179,7 +1304,31 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="diff-editor-card">
+              <button
+                className="pane-resizer"
+                type="button"
+                role="separator"
+                aria-label="Resize comparison editors"
+                aria-orientation="vertical"
+                aria-valuemin={25}
+                aria-valuemax={75}
+                aria-valuenow={Math.round(paneSplit)}
+                onPointerDown={beginPaneResize}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") setPaneSplit((current) => Math.max(25, current - 5));
+                  if (event.key === "ArrowRight") setPaneSplit((current) => Math.min(75, current + 5));
+                }}
+              />
+
+              <div
+                className="diff-editor-card"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void loadDiffFile(event.dataTransfer.files[0], "right");
+                }}
+              >
                 <header>
                   <strong>Changed text</strong>
                   <label className="diff-file-button">
@@ -1370,7 +1519,6 @@ export default function Home() {
                     aspectRatio: `${placeholderDimensions.width} / ${placeholderDimensions.height}`,
                   }}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={placeholderPreview} alt={placeholderConfig.text || "Generated placeholder"} />
                 </div>
               </div>
@@ -1442,12 +1590,30 @@ export default function Home() {
           </section>
         )}
 
-        {activeTool.id !== "diff" && activeTool.id !== "markdown" && (
-          <section className="editors">
+        {activeTool.id !== "diff" && activeTool.id !== "markdown" && activeTool.id !== "image-compressor" && activeTool.id !== "secrets" && (
+          <section
+            className="editors resizable-panes"
+            style={{ gridTemplateColumns: `minmax(0, ${paneSplit}fr) 10px minmax(0, ${100 - paneSplit}fr)` }}
+          >
             <label className="editor-panel">
               <span>Input</span>
               <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
             </label>
+            <button
+              className="pane-resizer"
+              type="button"
+              role="separator"
+              aria-label="Resize input and output editors"
+              aria-orientation="vertical"
+              aria-valuemin={25}
+              aria-valuemax={75}
+              aria-valuenow={Math.round(paneSplit)}
+              onPointerDown={beginPaneResize}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft") setPaneSplit((current) => Math.max(25, current - 5));
+                if (event.key === "ArrowRight") setPaneSplit((current) => Math.min(75, current + 5));
+              }}
+            />
             <label className="editor-panel output-panel">
               <span>Output</span>
               <textarea value={output} readOnly placeholder="Your transformed result appears here." spellCheck={false} />

@@ -1,0 +1,25 @@
+{
+  "name": "DeskFormat",
+  "short_name": "DeskFormat",
+  "description": "A private personal toolbox for formatting, converting, generating, and comparing data.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111716",
+  "theme_color": "#0f766e",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

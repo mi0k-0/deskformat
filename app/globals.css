@@ -420,10 +420,20 @@ button:disabled {
   white-space: nowrap;
 }
 
+.placeholder-stage {
+  display: grid;
+  min-height: 220px;
+  max-height: 520px;
+  place-items: center;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 16px;
+}
+
 .placeholder-canvas {
   display: grid;
-  width: min(100%, 760px);
-  max-height: 520px;
   place-items: center;
   overflow: hidden;
   border: 1px solid var(--line);

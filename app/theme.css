@@ -83,6 +83,10 @@ body {
   color: var(--status-text);
 }
 
+.placeholder-stage {
+  background: var(--field);
+}
+
 .regex-panel,
 .cron-builder,
 .image-builder {

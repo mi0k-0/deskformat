@@ -964,9 +964,17 @@ export default function Home() {
                   Exports at {placeholderDimensions.width} x {placeholderDimensions.height}px. Preview may be scaled to fit.
                 </small>
               </div>
-              <div className="placeholder-canvas" style={{ aspectRatio: `${placeholderConfig.width} / ${placeholderConfig.height}` }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={placeholderPreview} alt={placeholderConfig.text || "Generated placeholder"} />
+              <div className="placeholder-stage">
+                <div
+                  className="placeholder-canvas"
+                  style={{
+                    width: `min(${placeholderDimensions.width}px, 100%)`,
+                    aspectRatio: `${placeholderDimensions.width} / ${placeholderDimensions.height}`,
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={placeholderPreview} alt={placeholderConfig.text || "Generated placeholder"} />
+                </div>
               </div>
             </div>
 

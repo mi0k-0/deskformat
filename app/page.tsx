@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element */
 
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   buildTextDiffRows,
   createQrAssets,
@@ -15,7 +15,19 @@ import {
   type TestDataKind,
   type TimestampZone,
 } from "./extended-tools";
-import { ImageCompressor, OfflineInstall, SecretGenerator } from "./power-tools";
+import {
+  CommandPalette,
+  CsvInspector,
+  JsonStudioPanel,
+  PipelineBuilder,
+  QrTemplates,
+  cronOffsetLabel,
+  detectInput,
+  formatLocatedError,
+  nextCronOccurrences,
+  normalizeStructuredText,
+} from "./advanced-tools";
+import { ClearLocalData, ImageCompressor, OfflineInstall, SecretGenerator } from "./power-tools";
 
 type DiffPart = { value: string; added?: boolean; removed?: boolean };
 
@@ -55,6 +67,22 @@ type Tool = {
   quickActions: string[];
 };
 
+type WorkspaceTab = {
+  id: string;
+  toolId: ToolId;
+  input: string;
+  output: string;
+  name: string;
+};
+
+type DiffHistoryItem = {
+  id: string;
+  createdAt: string;
+  left: string;
+  right: string;
+  syntax: "text" | "json" | "yaml";
+};
+
 type CronConfig = {
   preset: string;
   seconds: string;
@@ -71,6 +99,7 @@ type CronConfig = {
   year: string;
 };
 
+type Theme = "light" | "dark";
 type ImageFormat = "png" | "jpg" | "svg";
 
 type PlaceholderConfig = {
@@ -106,7 +135,7 @@ const tools: Tool[] = [
     category: "Formatters",
     description: "Format, minify, validate, and inspect JSON payloads.",
     sample: '{"project":"DeskFormat","active":true,"items":[{"name":"JSON","rank":1},{"name":"URL","rank":2}]}',
-    quickActions: ["Format", "Minify", "Validate"],
+    quickActions: ["Format", "Minify", "Validate", "Sort Keys"],
   },
   {
     id: "xml",
@@ -184,8 +213,12 @@ const tools: Tool[] = [
 
 const categories = ["All", ...Array.from(new Set(tools.map((tool) => tool.category)))];
 const defaultToolId: ToolId = "cron";
+const themeStorageKey = "deskformat-theme";
 const favoriteStorageKey = "deskformat-favorites";
 const recentStorageKey = "deskformat-recent";
+const workspaceStorageKey = "deskformat-workspaces";
+const snippetStorageKey = "deskformat-snippets";
+const diffHistoryStorageKey = "deskformat-diff-history";
 const weekdayNames: Record<string, string> = {
   SUN: "Sunday",
   MON: "Monday",
@@ -238,7 +271,7 @@ const cronPresets: Record<string, Omit<CronConfig, "preset">> = {
     yearMode: "any",
     year: "*",
   },
-  Hourly: {
+  "Hourly": {
     seconds: "0",
     minutes: "0",
     hours: "*",
@@ -643,10 +676,21 @@ function describeCronExpression(expression: string) {
   ].join("\n");
 }
 
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, sortJsonValue(item)]),
+  );
+}
+
 export default function Home() {
   const [activeId, setActiveId] = useState<ToolId>(defaultToolId);
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
+  const [theme, setTheme] = useState<Theme>("light");
   const [input, setInput] = useState("0 0 12 * * ? *");
   const [output, setOutput] = useState("");
   const [notice, setNotice] = useState("Ready for paste-and-go cleanup.");
@@ -675,6 +719,20 @@ export default function Home() {
   const [savedToolsReady, setSavedToolsReady] = useState(false);
   const [paneSplit, setPaneSplit] = useState(50);
   const [workspaceDragging, setWorkspaceDragging] = useState(false);
+  const [cronTimezone, setCronTimezone] = useState("local");
+  const [diffSyntax, setDiffSyntax] = useState<"text" | "json" | "yaml">("text");
+  const [diffWrap, setDiffWrap] = useState(true);
+  const [diffHistory, setDiffHistory] = useState<DiffHistoryItem[]>([]);
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspaceTab[]>([
+    { id: "workspace-1", toolId: "cron", input: "0 0 12 * * ? *", output: "", name: "Cron Generator" },
+  ]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("workspace-1");
+  const [workspacesReady, setWorkspacesReady] = useState(false);
+  const [snippets, setSnippets] = useState<Record<string, string>>({});
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const [inputError, setInputError] = useState("");
+  const lastTypedInput = useRef(input);
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
   const isExtendedTool = extendedTools.some((tool) => tool.id === activeTool.id);
@@ -682,9 +740,20 @@ export default function Home() {
   const placeholderDimensions = useMemo(() => placeholderSize(placeholderConfig), [placeholderConfig]);
   const placeholderRecipe = useMemo(() => buildPlaceholderRecipe(placeholderConfig), [placeholderConfig]);
   const placeholderPreview = useMemo(() => buildPlaceholderDataUrl(placeholderConfig), [placeholderConfig]);
+  const preparedDiff = useMemo(() => {
+    try {
+      return {
+        left: normalizeStructuredText(input, diffSyntax),
+        right: normalizeStructuredText(diffRight, diffSyntax),
+        error: "",
+      };
+    } catch (error) {
+      return { left: input, right: diffRight, error: formatLocatedError(error, input) };
+    }
+  }, [diffRight, diffSyntax, input]);
   const diffRows = useMemo(
-    () => buildTextDiffRows(input, diffRight, diffIgnoreWhitespace),
-    [input, diffRight, diffIgnoreWhitespace],
+    () => buildTextDiffRows(preparedDiff.left, preparedDiff.right, diffIgnoreWhitespace),
+    [diffIgnoreWhitespace, preparedDiff.left, preparedDiff.right],
   );
   const diffChangeRows = useMemo(
     () => diffRows.map((row, index) => ({ row, index })).filter(({ row }) => row.kind !== "same"),
@@ -705,22 +774,23 @@ export default function Home() {
     [diffRows],
   );
   const markdownPreview = useMemo(() => markdownDocument(input), [input]);
+  const detection = useMemo(() => detectInput(input), [input]);
+  const cronSchedule = useMemo(() => {
+    try {
+      const dates = nextCronOccurrences(generatedCron, cronTimezone);
+      const offsets = new Set(dates.map((date) => cronOffsetLabel(date, cronTimezone)));
+      return { dates, warning: offsets.size > 1 ? "This schedule crosses a daylight-saving offset change." : "", error: "" };
+    } catch (error) {
+      return { dates: [] as Date[], warning: "", error: error instanceof Error ? error.message : "Schedule unavailable." };
+    }
+  }, [cronTimezone, generatedCron]);
   const visibleTools = useMemo(() => {
-    const filtered = tools.filter((tool) => {
+    return tools.filter((tool) => {
         const matchesCategory = category === "All" || tool.category === category;
         const searchable = `${tool.name} ${tool.category} ${tool.description}`.toLowerCase();
         return matchesCategory && searchable.includes(query.toLowerCase());
       });
-    const rank = (tool: Tool) => {
-      if (tool.id === "cron") return -10000;
-      const favoriteIndex = favorites.indexOf(tool.id);
-      if (favoriteIndex >= 0) return -1000 + favoriteIndex;
-      const recentIndex = recentTools.indexOf(tool.id);
-      if (recentIndex >= 0) return -500 + recentIndex;
-      return tools.indexOf(tool);
-    };
-    return filtered.sort((left, right) => rank(left) - rank(right));
-  }, [category, favorites, query, recentTools]);
+  }, [category, query]);
 
   useEffect(() => {
     if (activeId !== "qr" || !input.trim()) return;
@@ -764,13 +834,181 @@ export default function Home() {
     window.localStorage.setItem(recentStorageKey, JSON.stringify(recentTools));
   }, [favorites, recentTools, savedToolsReady]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const savedTabs = JSON.parse(window.localStorage.getItem(workspaceStorageKey) ?? "[]") as WorkspaceTab[];
+        const validTabs = Array.isArray(savedTabs)
+          ? savedTabs.filter((tab) => tab && tools.some((tool) => tool.id === tab.toolId)).slice(0, 12)
+          : [];
+        if (validTabs.length) {
+          const first = validTabs[0];
+          setWorkspaceTabs(validTabs);
+          setActiveWorkspaceId(first.id);
+          setActiveId(first.toolId);
+          setInput(first.input);
+          setOutput(first.output);
+          lastTypedInput.current = first.input;
+        }
+      } catch {
+        window.localStorage.removeItem(workspaceStorageKey);
+      }
+      try {
+        setSnippets(JSON.parse(window.localStorage.getItem(snippetStorageKey) ?? "{}"));
+      } catch {
+        setSnippets({});
+      }
+      try {
+        const savedHistory = JSON.parse(window.localStorage.getItem(diffHistoryStorageKey) ?? "[]");
+        setDiffHistory(Array.isArray(savedHistory) ? savedHistory.slice(0, 12) : []);
+      } catch {
+        setDiffHistory([]);
+      }
+      setWorkspacesReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!workspacesReady) return;
+    const timer = window.setTimeout(() => {
+      setWorkspaceTabs((current) => {
+        const next = current.map((tab) =>
+          tab.id === activeWorkspaceId
+            ? { ...tab, toolId: activeId, input, output, name: activeTool.name }
+            : tab,
+        );
+        window.localStorage.setItem(workspaceStorageKey, JSON.stringify(next));
+        return next;
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [activeId, activeTool.name, activeWorkspaceId, input, output, workspacesReady]);
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem(themeStorageKey);
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const nextTheme = savedTheme === "light" || savedTheme === "dark" ? savedTheme : prefersDark ? "dark" : "light";
+    const timer = window.setTimeout(() => setTheme(nextTheme), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(themeStorageKey, theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }
+
+  function replaceInput(value: string) {
+    lastTypedInput.current = value;
+    setInput(value);
+    setUndoStack([]);
+    setRedoStack([]);
+    setInputError("");
+  }
+
+  function changeInput(value: string) {
+    if (value !== lastTypedInput.current) {
+      setUndoStack((current) => [...current.slice(-49), lastTypedInput.current]);
+      setRedoStack([]);
+      lastTypedInput.current = value;
+    }
+    setInput(value);
+    setInputError("");
+  }
+
+  function undoInput() {
+    if (!undoStack.length) return;
+    const previous = undoStack[undoStack.length - 1];
+    setUndoStack((current) => current.slice(0, -1));
+    setRedoStack((current) => [...current, input]);
+    lastTypedInput.current = previous;
+    setInput(previous);
+  }
+
+  function redoInput() {
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    setRedoStack((current) => current.slice(0, -1));
+    setUndoStack((current) => [...current, input]);
+    lastTypedInput.current = next;
+    setInput(next);
+  }
+
   function selectTool(tool: Tool) {
     setActiveId(tool.id);
-    setInput(tool.id === "cron" ? generatedCron : tool.id === "image" ? placeholderRecipe : tool.sample);
+    replaceInput(tool.id === "cron" ? generatedCron : tool.id === "image" ? placeholderRecipe : tool.sample);
     setOutput("");
     setRecentTools((current) => [tool.id, ...current.filter((id) => id !== tool.id)].slice(0, 5));
     if (tool.id === "diff") setDiffCompared(false);
     setNotice(`${tool.name} loaded.`);
+  }
+
+  function selectToolById(toolId: string) {
+    const tool = tools.find((item) => item.id === toolId);
+    if (tool) selectTool(tool);
+  }
+
+  function snapshotCurrentTabs(tabs: WorkspaceTab[]) {
+    return tabs.map((tab) =>
+      tab.id === activeWorkspaceId ? { ...tab, toolId: activeId, input, output, name: activeTool.name } : tab,
+    );
+  }
+
+  function switchWorkspace(tabId: string) {
+    const target = workspaceTabs.find((tab) => tab.id === tabId);
+    if (!target || target.id === activeWorkspaceId) return;
+    setWorkspaceTabs((current) => snapshotCurrentTabs(current));
+    setActiveWorkspaceId(target.id);
+    setActiveId(target.toolId);
+    replaceInput(target.input);
+    setOutput(target.output);
+    setDiffCompared(false);
+    setNotice(`${target.name} workspace restored.`);
+  }
+
+  function addWorkspace() {
+    const id = crypto.randomUUID();
+    const nextTab: WorkspaceTab = { id, toolId: "cron", input: generatedCron, output: "", name: "Cron Generator" };
+    setWorkspaceTabs((current) => [...snapshotCurrentTabs(current), nextTab].slice(-12));
+    setActiveWorkspaceId(id);
+    setActiveId("cron");
+    replaceInput(generatedCron);
+    setOutput("");
+    setNotice("New workspace opened.");
+  }
+
+  function closeWorkspace(tabId: string) {
+    if (workspaceTabs.length === 1) return;
+    const index = workspaceTabs.findIndex((tab) => tab.id === tabId);
+    const nextTabs = snapshotCurrentTabs(workspaceTabs).filter((tab) => tab.id !== tabId);
+    setWorkspaceTabs(nextTabs);
+    if (tabId === activeWorkspaceId) {
+      const target = nextTabs[Math.max(0, index - 1)] ?? nextTabs[0];
+      setActiveWorkspaceId(target.id);
+      setActiveId(target.toolId);
+      replaceInput(target.input);
+      setOutput(target.output);
+    }
+  }
+
+  function saveSnippet() {
+    const name = window.prompt("Name this snippet");
+    if (!name?.trim() || !input) return;
+    const next = { ...snippets, [name.trim()]: input };
+    setSnippets(next);
+    window.localStorage.setItem(snippetStorageKey, JSON.stringify(next));
+    setNotice(`${name.trim()} saved on this device.`);
+  }
+
+  function loadSnippet(name: string) {
+    if (!name || snippets[name] === undefined) return;
+    replaceInput(snippets[name]);
+    setNotice(`${name} loaded.`);
   }
 
   function toggleFavorite(toolId: ToolId) {
@@ -784,7 +1022,7 @@ export default function Home() {
     if (activeId === "image-compressor" || activeId === "image" || activeId === "secrets") return;
     try {
       const value = await file.text();
-      setInput(value);
+      replaceInput(value);
       if (activeId === "diff") setDiffCompared(false);
       setNotice(`${file.name} loaded locally.`);
     } catch {
@@ -826,7 +1064,7 @@ export default function Home() {
     const nextConfig = { preset, ...cronPresets[preset] };
     setCronConfig(nextConfig);
     const expression = buildCronExpression(nextConfig);
-    setInput(expression);
+    replaceInput(expression);
     setOutput(describeCronExpression(expression));
     setNotice(`${preset} schedule loaded.`);
   }
@@ -842,13 +1080,13 @@ export default function Home() {
   function updatePlaceholderConfig(next: Partial<PlaceholderConfig>) {
     const nextConfig = { ...placeholderConfig, ...next };
     setPlaceholderConfig(nextConfig);
-    if (activeId === "image") setInput(buildPlaceholderRecipe(nextConfig));
+    if (activeId === "image") replaceInput(buildPlaceholderRecipe(nextConfig));
   }
 
   async function loadDiffFile(file: File | undefined, side: "left" | "right") {
     if (!file) return;
     const value = await file.text();
-    if (side === "left") setInput(value);
+    if (side === "left") replaceInput(value);
     else setDiffRight(value);
     setDiffCompared(false);
     setNotice(`${file.name} loaded locally.`);
@@ -856,7 +1094,7 @@ export default function Home() {
 
   function swapDiffInputs() {
     const previousLeft = input;
-    setInput(diffRight);
+    replaceInput(diffRight);
     setDiffRight(previousLeft);
     setDiffChangeCursor(0);
     setNotice("Original and changed text swapped.");
@@ -878,7 +1116,14 @@ export default function Home() {
 
       if (activeTool.id === "json") {
         const parsed = JSON.parse(input);
-        result = action === "Minify" ? JSON.stringify(parsed) : action === "Validate" ? "Valid JSON.\n\n" + JSON.stringify(parsed, null, 2) : JSON.stringify(parsed, null, 2);
+        result =
+          action === "Minify"
+            ? JSON.stringify(parsed)
+            : action === "Validate"
+              ? "Valid JSON.\n\n" + JSON.stringify(parsed, null, 2)
+              : action === "Sort Keys"
+                ? JSON.stringify(sortJsonValue(parsed), null, 2)
+                : JSON.stringify(parsed, null, 2);
       }
 
       if (activeTool.id === "xml") {
@@ -920,7 +1165,7 @@ export default function Home() {
       if (activeTool.id === "cron") {
         const expression = action === "Generate" ? generatedCron : input;
         result = action === "Generate" ? `${expression}\n\n${describeCronExpression(expression)}` : describeCronExpression(expression);
-        if (action === "Generate") setInput(expression);
+        if (action === "Generate") replaceInput(expression);
       }
 
       if (activeTool.id === "image") {
@@ -930,10 +1175,11 @@ export default function Home() {
         } else {
           result = await createPlaceholderOutput(placeholderConfig);
         }
-        setInput(placeholderRecipe);
+        replaceInput(placeholderRecipe);
       }
 
       if (activeTool.id === "diff") {
+        if (preparedDiff.error) throw new Error(preparedDiff.error);
         const added = diffStats.added;
         const removed = diffStats.removed;
         setDiffCompared(true);
@@ -947,6 +1193,16 @@ export default function Home() {
             return [row.kind === "added" ? `+ ${row.right}` : `- ${row.left}`];
           }),
         ].join("\n");
+        const historyItem: DiffHistoryItem = {
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+          left: input,
+          right: diffRight,
+          syntax: diffSyntax,
+        };
+        const nextHistory = [historyItem, ...diffHistory].slice(0, 12);
+        setDiffHistory(nextHistory);
+        window.localStorage.setItem(diffHistoryStorageKey, JSON.stringify(nextHistory));
       } else if (activeTool.id === "qr") {
         const assets = await createQrAssets(input, qrSize);
         setQrAssets(assets);
@@ -969,10 +1225,13 @@ export default function Home() {
       }
 
       setOutput(result);
+      setInputError("");
       setNotice(`${action} complete.`);
     } catch (error) {
       setOutput("");
-      setNotice(error instanceof Error ? error.message : "That input could not be processed.");
+      const message = formatLocatedError(error, input);
+      setInputError(message);
+      setNotice(message);
     }
   }
 
@@ -984,9 +1243,15 @@ export default function Home() {
 
   function swapOutput() {
     if (!output) return;
-    setInput(output);
+    replaceInput(output);
     setOutput("");
     setNotice("Output moved back into the editor.");
+  }
+
+  function downloadDiff() {
+    if (!output) return;
+    downloadBlob(new Blob([output], { type: "text/x-diff" }), "deskformat-comparison.patch");
+    setNotice("Patch file downloaded.");
   }
 
   return (
@@ -998,12 +1263,41 @@ export default function Home() {
             <p>Personal formatter</p>
             <h1>DeskFormat</h1>
           </div>
+          <label className="theme-switch">
+            <input checked={theme === "dark"} onChange={toggleTheme} type="checkbox" />
+            <span>{theme === "dark" ? "Dark" : "Light"}</span>
+          </label>
         </div>
+
+        <CommandPalette tools={tools} onSelect={selectToolById} />
 
         <label className="search">
           <span>Search tools</span>
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="json, url, color..." />
         </label>
+
+        {(favorites.length > 0 || recentTools.length > 0) && (
+          <div className="quick-tool-sections">
+            {favorites.length > 0 && (
+              <section>
+                <span>Favorites</span>
+                <div>{favorites.map((id) => {
+                  const tool = tools.find((item) => item.id === id);
+                  return tool ? <button className={activeId === id ? "selected" : ""} key={id} onClick={() => selectTool(tool)}>{tool.name}</button> : null;
+                })}</div>
+              </section>
+            )}
+            {recentTools.length > 0 && (
+              <section>
+                <span>Recent</span>
+                <div>{recentTools.filter((id) => !favorites.includes(id)).map((id) => {
+                  const tool = tools.find((item) => item.id === id);
+                  return tool ? <button className={activeId === id ? "selected" : ""} key={id} onClick={() => selectTool(tool)}>{tool.name}</button> : null;
+                })}</div>
+              </section>
+            )}
+          </div>
+        )}
 
         <div className="category-tabs" aria-label="Tool categories">
           {categories.map((item) => (
@@ -1029,11 +1323,11 @@ export default function Home() {
               >
                 {favorites.includes(tool.id) ? "★" : "☆"}
               </button>
-              {recentTools.includes(tool.id) && !favorites.includes(tool.id) && tool.id !== "cron" && <span className="recent-badge">Recent</span>}
             </div>
           ))}
         </div>
         <OfflineInstall />
+        <ClearLocalData />
       </aside>
 
       <section
@@ -1052,6 +1346,17 @@ export default function Home() {
         }}
       >
         {workspaceDragging && activeId !== "image-compressor" && <div className="drop-overlay">Drop file to load it locally</div>}
+        <nav className="workspace-tabs" aria-label="Open workspaces">
+          <div>
+            {workspaceTabs.map((tab) => (
+              <span className={tab.id === activeWorkspaceId ? "selected" : ""} key={tab.id}>
+                <button onClick={() => switchWorkspace(tab.id)}>{tab.name}</button>
+                <button aria-label={`Close ${tab.name} workspace`} title="Close workspace" onClick={() => closeWorkspace(tab.id)} disabled={workspaceTabs.length === 1}>×</button>
+              </span>
+            ))}
+          </div>
+          <button className="workspace-add" aria-label="New workspace" title="New workspace" onClick={addWorkspace}>+</button>
+        </nav>
         <header className="topbar">
           <div>
             <p className="eyebrow">{activeTool.category}</p>
@@ -1061,7 +1366,16 @@ export default function Home() {
           <div className="status">{notice}</div>
         </header>
 
-        {activeTool.id !== "diff" && activeTool.id !== "image-compressor" && activeTool.id !== "secrets" && (
+        {detection && detection.toolId !== activeId && (
+          <button className="detection-suggestion" onClick={() => selectToolById(detection.toolId)}>
+            <span>Detected {detection.label}</span>
+            <strong>Open {tools.find((tool) => tool.id === detection.toolId)?.name}</strong>
+          </button>
+        )}
+
+        {inputError && <div className="input-error" role="alert">{inputError}</div>}
+
+        {activeTool.id !== "diff" && activeTool.id !== "image-compressor" && activeTool.id !== "secrets" && activeTool.id !== "pipeline" && (
           <section className="action-row" aria-label="Actions">
             {activeTool.quickActions.map((action) => (
               <button className="primary-action" key={action} onClick={() => void runAction(action)}>
@@ -1074,6 +1388,16 @@ export default function Home() {
             <button className="utility-action" onClick={swapOutput} disabled={!output}>
               Reuse Output
             </button>
+            <button className="utility-action" onClick={undoInput} disabled={!undoStack.length}>Undo</button>
+            <button className="utility-action" onClick={redoInput} disabled={!redoStack.length}>Redo</button>
+            <button className="utility-action" onClick={saveSnippet} disabled={!input}>Save Snippet</button>
+            <select className="snippet-select" aria-label="Saved snippets" defaultValue="" onChange={(event) => {
+              loadSnippet(event.target.value);
+              event.target.value = "";
+            }}>
+              <option value="">Load snippet</option>
+              {Object.keys(snippets).map((name) => <option key={name}>{name}</option>)}
+            </select>
           </section>
         )}
 
@@ -1093,6 +1417,18 @@ export default function Home() {
         {activeTool.id === "image-compressor" && <ImageCompressor onNotice={updatePowerToolNotice} />}
 
         {activeTool.id === "secrets" && <SecretGenerator onNotice={updatePowerToolNotice} />}
+
+        {activeTool.id === "pipeline" && (
+          <PipelineBuilder input={input} onResult={setOutput} onNotice={setNotice} />
+        )}
+
+        {activeTool.id === "json" && (
+          <JsonStudioPanel input={input} onOutput={setOutput} onNotice={setNotice} />
+        )}
+
+        {activeTool.id === "data-converter" && input.includes("\n") && /[,;\t]/.test(input.split("\n")[0]) && (
+          <CsvInspector input={input} onOutput={setOutput} onNotice={setNotice} />
+        )}
 
         {activeTool.id === "timestamp" && (
           <section className="tool-options compact-options" aria-label="Timestamp timezone">
@@ -1133,29 +1469,35 @@ export default function Home() {
         )}
 
         {activeTool.id === "qr" && (
-          <section className="qr-builder" aria-label="QR code options and preview">
-            <div className="qr-preview">
-              {qrAssets ? <img src={qrAssets.png} alt="Generated QR code preview" /> : <span>Enter text to generate a QR code.</span>}
-            </div>
-            <div className="tool-options">
-              <label>
-                Download format
-                <select value={qrFormat} onChange={(event) => setQrFormat(event.target.value as QrFormat)}>
-                  <option value="png">PNG</option>
-                  <option value="svg">SVG</option>
-                </select>
-              </label>
-              <label>
-                Size
-                <select value={qrSize} onChange={(event) => setQrSize(Number(event.target.value))}>
-                  <option value="256">256 px</option>
-                  <option value="320">320 px</option>
-                  <option value="512">512 px</option>
-                  <option value="1024">1024 px</option>
-                </select>
-              </label>
-            </div>
-          </section>
+          <>
+            <QrTemplates onValue={(value) => {
+              replaceInput(value);
+              setNotice("QR template applied.");
+            }} />
+            <section className="qr-builder" aria-label="QR code options and preview">
+              <div className="qr-preview">
+                {qrAssets ? <img src={qrAssets.png} alt="Generated QR code preview" /> : <span>Enter text to generate a QR code.</span>}
+              </div>
+              <div className="tool-options">
+                <label>
+                  Download format
+                  <select value={qrFormat} onChange={(event) => setQrFormat(event.target.value as QrFormat)}>
+                    <option value="png">PNG</option>
+                    <option value="svg">SVG</option>
+                  </select>
+                </label>
+                <label>
+                  Size
+                  <select value={qrSize} onChange={(event) => setQrSize(Number(event.target.value))}>
+                    <option value="256">256 px</option>
+                    <option value="320">320 px</option>
+                    <option value="512">512 px</option>
+                    <option value="1024">1024 px</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+          </>
         )}
 
         {activeTool.id === "sql" && (
@@ -1190,6 +1532,7 @@ export default function Home() {
                   <button className="utility-action" onClick={() => setDiffCompared(false)}>Edit input</button>
                   <button className="utility-action" onClick={swapDiffInputs}>Swap</button>
                   <button className="utility-action" onClick={copyOutput} disabled={!output}>Copy diff</button>
+                  <button className="utility-action" onClick={downloadDiff} disabled={!output}>Download patch</button>
                 </div>
               </header>
 
@@ -1206,6 +1549,10 @@ export default function Home() {
                   <input checked={diffHideUnchanged} onChange={(event) => setDiffHideUnchanged(event.target.checked)} type="checkbox" />
                   Hide unchanged
                 </label>
+                <label className="diff-toggle">
+                  <input checked={diffWrap} onChange={(event) => setDiffWrap(event.target.checked)} type="checkbox" />
+                  Wrap lines
+                </label>
                 <div className="diff-navigation">
                   <button onClick={() => navigateDiff(-1)} disabled={!diffChangeRows.length}>Previous</button>
                   <span>{diffChangeRows.length ? `${diffChangeCursor + 1} of ${diffChangeRows.length}` : "No changes"}</span>
@@ -1213,7 +1560,7 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className={`diff-results ${diffMode}`}>
+              <div className={`diff-results ${diffMode} ${diffWrap ? "wrap-lines" : ""}`}>
                 {diffMode === "split" && (
                   <div className="diff-column-headings">
                     <span>Original text</span>
@@ -1262,11 +1609,38 @@ export default function Home() {
               </div>
             </section>
           ) : (
-            <section
-              className="diff-input-workspace resizable-panes"
-              aria-label="Text comparison"
-              style={{ gridTemplateColumns: `minmax(0, ${paneSplit}fr) 10px minmax(0, ${100 - paneSplit}fr)` }}
-            >
+            <>
+              <section className="diff-source-options" aria-label="Comparison type and history">
+                <label>
+                  Compare as
+                  <select value={diffSyntax} onChange={(event) => setDiffSyntax(event.target.value as "text" | "json" | "yaml")}>
+                    <option value="text">Plain text</option>
+                    <option value="json">JSON structure</option>
+                    <option value="yaml">YAML structure</option>
+                  </select>
+                </label>
+                <label>
+                  Comparison history
+                  <select defaultValue="" onChange={(event) => {
+                    const item = diffHistory.find((history) => history.id === event.target.value);
+                    if (item) {
+                      replaceInput(item.left);
+                      setDiffRight(item.right);
+                      setDiffSyntax(item.syntax);
+                      setNotice("Previous comparison restored.");
+                    }
+                    event.target.value = "";
+                  }}>
+                    <option value="">Load previous</option>
+                    {diffHistory.map((item) => <option value={item.id} key={item.id}>{new Date(item.createdAt).toLocaleString()}</option>)}
+                  </select>
+                </label>
+              </section>
+              <section
+                className="diff-input-workspace resizable-panes"
+                aria-label="Text comparison"
+                style={{ gridTemplateColumns: `minmax(0, ${paneSplit}fr) 10px minmax(0, ${100 - paneSplit}fr)` }}
+              >
               <div
                 className="diff-editor-card"
                 onDragOver={(event) => event.preventDefault()}
@@ -1287,14 +1661,14 @@ export default function Home() {
                     />
                   </label>
                 </header>
-                <div className="diff-editor-shell">
+                <div className={`diff-editor-shell ${diffWrap ? "wrap-lines" : ""}`}>
                   <div className="diff-editor-lines" aria-hidden="true">
                     {Array.from({ length: Math.max(input.split(/\r\n?|\n/).length, 1) }, (_, index) => <span key={index}>{index + 1}</span>)}
                   </div>
                   <textarea
                     aria-label="Original text"
                     value={input}
-                    onChange={(event) => setInput(event.target.value)}
+                    onChange={(event) => changeInput(event.target.value)}
                     onScroll={(event) => {
                       const gutter = event.currentTarget.previousElementSibling as HTMLElement | null;
                       if (gutter) gutter.scrollTop = event.currentTarget.scrollTop;
@@ -1340,7 +1714,7 @@ export default function Home() {
                     />
                   </label>
                 </header>
-                <div className="diff-editor-shell">
+                <div className={`diff-editor-shell ${diffWrap ? "wrap-lines" : ""}`}>
                   <div className="diff-editor-lines" aria-hidden="true">
                     {Array.from({ length: Math.max(diffRight.split(/\r\n?|\n/).length, 1) }, (_, index) => <span key={index}>{index + 1}</span>)}
                   </div>
@@ -1358,11 +1732,12 @@ export default function Home() {
               </div>
 
               <footer className="diff-input-actions">
-                <button className="utility-action" onClick={() => { setInput(""); setDiffRight(""); }}>Clear</button>
+                <button className="utility-action" onClick={() => { replaceInput(""); setDiffRight(""); }}>Clear</button>
                 <button className="utility-action" onClick={swapDiffInputs}>Swap</button>
                 <button className="primary-action" onClick={() => void runAction("Compare")}>Find differences</button>
               </footer>
-            </section>
+              </section>
+            </>
           )
         )}
 
@@ -1370,7 +1745,7 @@ export default function Home() {
           <section className="markdown-preview" aria-label="Rendered Markdown preview">
             <label className="comparison-input">
               <span>Markdown</span>
-              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+              <textarea value={input} onChange={(event) => changeInput(event.target.value)} spellCheck={false} />
             </label>
             <div className="markdown-rendered">
               <span className="panel-label">Rendered preview</span>
@@ -1394,6 +1769,19 @@ export default function Home() {
                     <option key={preset}>{preset}</option>
                   ))}
                   <option>Custom</option>
+                </select>
+              </label>
+
+              <label>
+                Timezone
+                <select value={cronTimezone} onChange={(event) => setCronTimezone(event.target.value)}>
+                  <option value="local">Device local time</option>
+                  <option value="UTC">UTC</option>
+                  <option value="Europe/London">Europe / London</option>
+                  <option value="America/New_York">America / New York</option>
+                  <option value="America/Los_Angeles">America / Los Angeles</option>
+                  <option value="Asia/Tokyo">Asia / Tokyo</option>
+                  <option value="Australia/Sydney">Australia / Sydney</option>
                 </select>
               </label>
 
@@ -1498,6 +1886,32 @@ export default function Home() {
                 </button>
               ))}
             </div>
+
+            <section className="cron-next-runs" aria-label="Next scheduled runs">
+              <header>
+                <strong>Next 10 runs</strong>
+                <span>{cronTimezone === "local" ? "Device local time" : cronTimezone}</span>
+              </header>
+              {cronSchedule.error ? (
+                <p className="cron-run-error">{cronSchedule.error}</p>
+              ) : (
+                <ol>
+                  {cronSchedule.dates.map((date) => (
+                    <li key={date.toISOString()}>
+                      <time dateTime={date.toISOString()}>
+                        {new Intl.DateTimeFormat("en-GB", {
+                          dateStyle: "medium",
+                          timeStyle: "long",
+                          ...(cronTimezone === "local" ? {} : { timeZone: cronTimezone }),
+                        }).format(date)}
+                      </time>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {cronSchedule.warning && <p className="cron-dst-warning">{cronSchedule.warning}</p>}
+              {cronConfig.yearMode !== "any" && <p className="cron-dst-warning">The preview uses the repeating six-field schedule; the selected Quartz year still remains in the generated expression.</p>}
+            </section>
           </section>
         )}
 
@@ -1597,7 +2011,7 @@ export default function Home() {
           >
             <label className="editor-panel">
               <span>Input</span>
-              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
+              <textarea value={input} onChange={(event) => changeInput(event.target.value)} spellCheck={false} />
             </label>
             <button
               className="pane-resizer"

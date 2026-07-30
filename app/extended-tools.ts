@@ -6,6 +6,7 @@ import QRCode from "qrcode";
 import { format as formatSql } from "sql-formatter";
 
 export type ExtendedToolId =
+  | "pipeline"
   | "timestamp"
   | "test-data"
   | "qr"
@@ -29,6 +30,14 @@ export type SqlDialect =
   | "transactsql";
 
 export const extendedTools = [
+  {
+    id: "pipeline" as const,
+    name: "Pipeline Builder",
+    category: "Workflows",
+    description: "Chain transformations into reusable recipes that stay on this device.",
+    sample: "eyJwcm9qZWN0IjoiRGVza0Zvcm1hdCIsImFjdGl2ZSI6dHJ1ZX0=",
+    quickActions: [],
+  },
   {
     id: "timestamp" as const,
     name: "Timestamp Converter",

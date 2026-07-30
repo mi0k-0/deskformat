@@ -1,4 +1,4 @@
-import { diffLines } from "diff";
+import { diffLines, diffWordsWithSpace } from "diff";
 import { dump, load } from "js-yaml";
 import { marked } from "marked";
 import Papa from "papaparse";
@@ -236,6 +236,139 @@ export function markdownDocument(markdown: string) {
 
 export function getLineDiff(before: string, after: string) {
   return diffLines(before, after);
+}
+
+export type TextDiffRow = {
+  kind: "same" | "changed" | "added" | "removed";
+  leftNumber: number | null;
+  rightNumber: number | null;
+  left: string;
+  right: string;
+  leftParts: ReturnType<typeof diffWordsWithSpace>;
+  rightParts: ReturnType<typeof diffWordsWithSpace>;
+};
+
+type RawDiffRow = {
+  kind: "same" | "added" | "removed";
+  leftNumber: number | null;
+  rightNumber: number | null;
+  left: string;
+  right: string;
+};
+
+function splitDiffLines(value: string) {
+  const normalized = value.replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+  if (normalized.endsWith("\n")) lines.pop();
+  return lines;
+}
+
+function comparableLine(value: string, ignoreWhitespace: boolean) {
+  return ignoreWhitespace ? value.replace(/\s+/g, " ").trim() : value;
+}
+
+export function buildTextDiffRows(before: string, after: string, ignoreWhitespace = false): TextDiffRow[] {
+  const leftLines = splitDiffLines(before);
+  const rightLines = splitDiffLines(after);
+  const leftComparable = leftLines.map((line) => comparableLine(line, ignoreWhitespace));
+  const rightComparable = rightLines.map((line) => comparableLine(line, ignoreWhitespace));
+  const table = Array.from({ length: leftLines.length + 1 }, () => new Uint32Array(rightLines.length + 1));
+
+  for (let leftIndex = leftLines.length - 1; leftIndex >= 0; leftIndex -= 1) {
+    for (let rightIndex = rightLines.length - 1; rightIndex >= 0; rightIndex -= 1) {
+      table[leftIndex][rightIndex] =
+        leftComparable[leftIndex] === rightComparable[rightIndex]
+          ? table[leftIndex + 1][rightIndex + 1] + 1
+          : Math.max(table[leftIndex + 1][rightIndex], table[leftIndex][rightIndex + 1]);
+    }
+  }
+
+  const rawRows: RawDiffRow[] = [];
+  let leftIndex = 0;
+  let rightIndex = 0;
+
+  while (leftIndex < leftLines.length || rightIndex < rightLines.length) {
+    if (
+      leftIndex < leftLines.length &&
+      rightIndex < rightLines.length &&
+      leftComparable[leftIndex] === rightComparable[rightIndex]
+    ) {
+      rawRows.push({
+        kind: "same",
+        leftNumber: leftIndex + 1,
+        rightNumber: rightIndex + 1,
+        left: leftLines[leftIndex],
+        right: rightLines[rightIndex],
+      });
+      leftIndex += 1;
+      rightIndex += 1;
+    } else if (
+      rightIndex < rightLines.length &&
+      (leftIndex >= leftLines.length || table[leftIndex][rightIndex + 1] > table[leftIndex + 1][rightIndex])
+    ) {
+      rawRows.push({
+        kind: "added",
+        leftNumber: null,
+        rightNumber: rightIndex + 1,
+        left: "",
+        right: rightLines[rightIndex],
+      });
+      rightIndex += 1;
+    } else {
+      rawRows.push({
+        kind: "removed",
+        leftNumber: leftIndex + 1,
+        rightNumber: null,
+        left: leftLines[leftIndex],
+        right: "",
+      });
+      leftIndex += 1;
+    }
+  }
+
+  const rows: TextDiffRow[] = [];
+  let rawIndex = 0;
+  while (rawIndex < rawRows.length) {
+    const row = rawRows[rawIndex];
+    if (row.kind === "same") {
+      rows.push({ ...row, leftParts: [], rightParts: [] });
+      rawIndex += 1;
+      continue;
+    }
+
+    const changedBlock: RawDiffRow[] = [];
+    while (rawIndex < rawRows.length && rawRows[rawIndex].kind !== "same") {
+      changedBlock.push(rawRows[rawIndex]);
+      rawIndex += 1;
+    }
+
+    const removedRows = changedBlock.filter((item) => item.kind === "removed");
+    const addedRows = changedBlock.filter((item) => item.kind === "added");
+    const pairCount = Math.max(removedRows.length, addedRows.length);
+
+    for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+      const removed = removedRows[pairIndex];
+      const added = addedRows[pairIndex];
+      if (removed && added) {
+        const parts = diffWordsWithSpace(removed.left, added.right);
+        rows.push({
+          kind: "changed",
+          leftNumber: removed.leftNumber,
+          rightNumber: added.rightNumber,
+          left: removed.left,
+          right: added.right,
+          leftParts: parts.filter((part) => !part.added),
+          rightParts: parts.filter((part) => !part.removed),
+        });
+      } else if (removed) {
+        rows.push({ ...removed, leftParts: [], rightParts: [] });
+      } else if (added) {
+        rows.push({ ...added, leftParts: [], rightParts: [] });
+      }
+    }
+  }
+
+  return rows;
 }
 
 export async function createQrAssets(value: string, size: number) {

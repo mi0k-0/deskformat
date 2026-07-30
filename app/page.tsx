@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  buildTextDiffRows,
   createQrAssets,
   extendedTools,
-  getLineDiff,
   markdownDocument,
   runExtendedTool,
   type ExtendedToolId,
@@ -13,6 +13,20 @@ import {
   type TestDataKind,
   type TimestampZone,
 } from "./extended-tools";
+
+type DiffPart = { value: string; added?: boolean; removed?: boolean };
+
+function DiffContent({ parts, text, side }: { parts: DiffPart[]; text: string; side: "left" | "right" }) {
+  if (!parts.length) return text || " ";
+  return parts.map((part, index) => (
+    <mark
+      className={side === "left" && part.removed ? "word-removed" : side === "right" && part.added ? "word-added" : ""}
+      key={`${index}-${part.value.length}`}
+    >
+      {part.value}
+    </mark>
+  ));
+}
 
 type ToolId =
   | ExtendedToolId
@@ -645,6 +659,11 @@ export default function Home() {
   const [qrSize, setQrSize] = useState(320);
   const [qrAssets, setQrAssets] = useState<Awaited<ReturnType<typeof createQrAssets>> | null>(null);
   const [diffRight, setDiffRight] = useState("DeskFormat keeps useful tools nearby.\nThis line stays the same.\nThis line was added.");
+  const [diffCompared, setDiffCompared] = useState(false);
+  const [diffMode, setDiffMode] = useState<"split" | "unified">("split");
+  const [diffIgnoreWhitespace, setDiffIgnoreWhitespace] = useState(false);
+  const [diffHideUnchanged, setDiffHideUnchanged] = useState(false);
+  const [diffChangeCursor, setDiffChangeCursor] = useState(0);
   const [sqlDialect, setSqlDialect] = useState<SqlDialect>("sql");
 
   const activeTool = tools.find((tool) => tool.id === activeId) ?? tools[0];
@@ -653,7 +672,28 @@ export default function Home() {
   const placeholderDimensions = useMemo(() => placeholderSize(placeholderConfig), [placeholderConfig]);
   const placeholderRecipe = useMemo(() => buildPlaceholderRecipe(placeholderConfig), [placeholderConfig]);
   const placeholderPreview = useMemo(() => buildPlaceholderDataUrl(placeholderConfig), [placeholderConfig]);
-  const diffParts = useMemo(() => getLineDiff(input, diffRight), [input, diffRight]);
+  const diffRows = useMemo(
+    () => buildTextDiffRows(input, diffRight, diffIgnoreWhitespace),
+    [input, diffRight, diffIgnoreWhitespace],
+  );
+  const diffChangeRows = useMemo(
+    () => diffRows.map((row, index) => ({ row, index })).filter(({ row }) => row.kind !== "same"),
+    [diffRows],
+  );
+  const displayedDiffRows = useMemo(
+    () =>
+      diffRows
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => !diffHideUnchanged || row.kind !== "same"),
+    [diffRows, diffHideUnchanged],
+  );
+  const diffStats = useMemo(
+    () => ({
+      added: diffRows.filter((row) => row.kind === "added" || row.kind === "changed").length,
+      removed: diffRows.filter((row) => row.kind === "removed" || row.kind === "changed").length,
+    }),
+    [diffRows],
+  );
   const markdownPreview = useMemo(() => markdownDocument(input), [input]);
   const visibleTools = useMemo(
     () =>
@@ -687,6 +727,7 @@ export default function Home() {
     setActiveId(tool.id);
     setInput(tool.id === "cron" ? generatedCron : tool.id === "image" ? placeholderRecipe : tool.sample);
     setOutput("");
+    if (tool.id === "diff") setDiffCompared(false);
     setNotice(`${tool.name} loaded.`);
   }
 
@@ -719,6 +760,33 @@ export default function Home() {
     const nextConfig = { ...placeholderConfig, ...next };
     setPlaceholderConfig(nextConfig);
     if (activeId === "image") setInput(buildPlaceholderRecipe(nextConfig));
+  }
+
+  async function loadDiffFile(file: File | undefined, side: "left" | "right") {
+    if (!file) return;
+    const value = await file.text();
+    if (side === "left") setInput(value);
+    else setDiffRight(value);
+    setDiffCompared(false);
+    setNotice(`${file.name} loaded locally.`);
+  }
+
+  function swapDiffInputs() {
+    const previousLeft = input;
+    setInput(diffRight);
+    setDiffRight(previousLeft);
+    setDiffChangeCursor(0);
+    setNotice("Original and changed text swapped.");
+  }
+
+  function navigateDiff(direction: -1 | 1) {
+    if (!diffChangeRows.length) return;
+    const nextCursor = (diffChangeCursor + direction + diffChangeRows.length) % diffChangeRows.length;
+    setDiffChangeCursor(nextCursor);
+    const rowIndex = diffChangeRows[nextCursor].index;
+    window.requestAnimationFrame(() => {
+      document.getElementById(`diff-row-${rowIndex}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   }
 
   async function runAction(action: string) {
@@ -783,17 +851,18 @@ export default function Home() {
       }
 
       if (activeTool.id === "diff") {
-        const added = diffParts.filter((part) => part.added).reduce((total, part) => total + (part.count ?? 0), 0);
-        const removed = diffParts.filter((part) => part.removed).reduce((total, part) => total + (part.count ?? 0), 0);
+        const added = diffStats.added;
+        const removed = diffStats.removed;
+        setDiffCompared(true);
+        setDiffChangeCursor(0);
         result = [
           `${added} added line${added === 1 ? "" : "s"}, ${removed} removed line${removed === 1 ? "" : "s"}.`,
           "",
-          ...diffParts.flatMap((part) =>
-            part.value
-              .replace(/\n$/, "")
-              .split("\n")
-              .map((line) => `${part.added ? "+ " : part.removed ? "- " : "  "}${line}`),
-          ),
+          ...diffRows.flatMap((row) => {
+            if (row.kind === "same") return [`  ${row.left}`];
+            if (row.kind === "changed") return [`- ${row.left}`, `+ ${row.right}`];
+            return [row.kind === "added" ? `+ ${row.right}` : `- ${row.left}`];
+          }),
         ].join("\n");
       } else if (activeTool.id === "qr") {
         const assets = await createQrAssets(input, qrSize);
@@ -882,19 +951,21 @@ export default function Home() {
           <div className="status">{notice}</div>
         </header>
 
-        <section className="action-row" aria-label="Actions">
-          {activeTool.quickActions.map((action) => (
-            <button className="primary-action" key={action} onClick={() => void runAction(action)}>
-              {action}
+        {activeTool.id !== "diff" && (
+          <section className="action-row" aria-label="Actions">
+            {activeTool.quickActions.map((action) => (
+              <button className="primary-action" key={action} onClick={() => void runAction(action)}>
+                {action}
+              </button>
+            ))}
+            <button className="utility-action" onClick={copyOutput} disabled={!output}>
+              Copy
             </button>
-          ))}
-          <button className="utility-action" onClick={copyOutput} disabled={!output}>
-            Copy
-          </button>
-          <button className="utility-action" onClick={swapOutput} disabled={!output}>
-            Reuse Output
-          </button>
-        </section>
+            <button className="utility-action" onClick={swapOutput} disabled={!output}>
+              Reuse Output
+            </button>
+          </section>
+        )}
 
         {activeTool.id === "regex" && (
           <section className="regex-panel" aria-label="Regex options">
@@ -991,26 +1062,159 @@ export default function Home() {
         )}
 
         {activeTool.id === "diff" && (
-          <section className="comparison-workspace" aria-label="Text comparison">
-            <label className="comparison-input">
-              <span>Original text</span>
-              <textarea value={input} onChange={(event) => setInput(event.target.value)} spellCheck={false} />
-            </label>
-            <label className="comparison-input">
-              <span>Updated text</span>
-              <textarea value={diffRight} onChange={(event) => setDiffRight(event.target.value)} spellCheck={false} />
-            </label>
-            <div className="diff-preview" aria-label="Highlighted differences">
-              <span className="panel-label">Changes</span>
-              <pre>
-                {diffParts.map((part, index) => (
-                  <span className={part.added ? "diff-added" : part.removed ? "diff-removed" : "diff-same"} key={`${index}-${part.value.length}`}>
-                    {part.value}
-                  </span>
-                ))}
-              </pre>
-            </div>
-          </section>
+          diffCompared ? (
+            <section className="diff-result-workspace" aria-label="Text comparison results">
+              <header className="diff-result-header">
+                <div className="diff-stat diff-stat-removed">
+                  <strong>{diffStats.removed}</strong>
+                  <span>{diffStats.removed === 1 ? "removed line" : "removed lines"}</span>
+                </div>
+                <div className="diff-stat diff-stat-added">
+                  <strong>{diffStats.added}</strong>
+                  <span>{diffStats.added === 1 ? "added line" : "added lines"}</span>
+                </div>
+                <div className="diff-result-actions">
+                  <button className="utility-action" onClick={() => setDiffCompared(false)}>Edit input</button>
+                  <button className="utility-action" onClick={swapDiffInputs}>Swap</button>
+                  <button className="utility-action" onClick={copyOutput} disabled={!output}>Copy diff</button>
+                </div>
+              </header>
+
+              <div className="diff-control-bar">
+                <div className="segmented-control diff-layout-control" aria-label="Diff layout">
+                  <button className={diffMode === "split" ? "selected" : ""} onClick={() => setDiffMode("split")}>Split</button>
+                  <button className={diffMode === "unified" ? "selected" : ""} onClick={() => setDiffMode("unified")}>Unified</button>
+                </div>
+                <label className="diff-toggle">
+                  <input checked={diffIgnoreWhitespace} onChange={(event) => setDiffIgnoreWhitespace(event.target.checked)} type="checkbox" />
+                  Ignore whitespace
+                </label>
+                <label className="diff-toggle">
+                  <input checked={diffHideUnchanged} onChange={(event) => setDiffHideUnchanged(event.target.checked)} type="checkbox" />
+                  Hide unchanged
+                </label>
+                <div className="diff-navigation">
+                  <button onClick={() => navigateDiff(-1)} disabled={!diffChangeRows.length}>Previous</button>
+                  <span>{diffChangeRows.length ? `${diffChangeCursor + 1} of ${diffChangeRows.length}` : "No changes"}</span>
+                  <button onClick={() => navigateDiff(1)} disabled={!diffChangeRows.length}>Next</button>
+                </div>
+              </div>
+
+              <div className={`diff-results ${diffMode}`}>
+                {diffMode === "split" && (
+                  <div className="diff-column-headings">
+                    <span>Original text</span>
+                    <span>Changed text</span>
+                  </div>
+                )}
+                {displayedDiffRows.map(({ row, index }) =>
+                  diffMode === "split" ? (
+                    <div
+                      className={`diff-split-row ${row.kind} ${diffChangeRows[diffChangeCursor]?.index === index ? "current-change" : ""}`}
+                      id={`diff-row-${index}`}
+                      key={index}
+                    >
+                      <div className={`diff-line left ${row.kind === "added" ? "empty" : row.kind}`}>
+                        <span className="diff-line-number">{row.leftNumber ?? ""}</span>
+                        <code><DiffContent parts={row.leftParts} text={row.left} side="left" /></code>
+                      </div>
+                      <div className={`diff-line right ${row.kind === "removed" ? "empty" : row.kind}`}>
+                        <span className="diff-line-number">{row.rightNumber ?? ""}</span>
+                        <code><DiffContent parts={row.rightParts} text={row.right} side="right" /></code>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className={`diff-unified-group ${row.kind} ${diffChangeRows[diffChangeCursor]?.index === index ? "current-change" : ""}`}
+                      id={`diff-row-${index}`}
+                      key={index}
+                    >
+                      {(row.kind === "same" || row.kind === "removed" || row.kind === "changed") && (
+                        <div className={`diff-line ${row.kind === "same" ? "same" : "removed"}`}>
+                          <span className="diff-line-number">{row.leftNumber ?? ""}</span>
+                          <span className="diff-prefix">{row.kind === "same" ? " " : "-"}</span>
+                          <code><DiffContent parts={row.leftParts} text={row.left} side="left" /></code>
+                        </div>
+                      )}
+                      {(row.kind === "added" || row.kind === "changed") && (
+                        <div className="diff-line added">
+                          <span className="diff-line-number">{row.rightNumber ?? ""}</span>
+                          <span className="diff-prefix">+</span>
+                          <code><DiffContent parts={row.rightParts} text={row.right} side="right" /></code>
+                        </div>
+                      )}
+                    </div>
+                  ),
+                )}
+              </div>
+            </section>
+          ) : (
+            <section className="diff-input-workspace" aria-label="Text comparison">
+              <div className="diff-editor-card">
+                <header>
+                  <strong>Original text</strong>
+                  <label className="diff-file-button">
+                    Open file
+                    <input
+                      type="file"
+                      accept=".txt,.md,.json,.csv,.xml,.yaml,.yml,.sql,text/*"
+                      onChange={(event) => void loadDiffFile(event.target.files?.[0], "left")}
+                    />
+                  </label>
+                </header>
+                <div className="diff-editor-shell">
+                  <div className="diff-editor-lines" aria-hidden="true">
+                    {Array.from({ length: Math.max(input.split(/\r\n?|\n/).length, 1) }, (_, index) => <span key={index}>{index + 1}</span>)}
+                  </div>
+                  <textarea
+                    aria-label="Original text"
+                    value={input}
+                    onChange={(event) => setInput(event.target.value)}
+                    onScroll={(event) => {
+                      const gutter = event.currentTarget.previousElementSibling as HTMLElement | null;
+                      if (gutter) gutter.scrollTop = event.currentTarget.scrollTop;
+                    }}
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+
+              <div className="diff-editor-card">
+                <header>
+                  <strong>Changed text</strong>
+                  <label className="diff-file-button">
+                    Open file
+                    <input
+                      type="file"
+                      accept=".txt,.md,.json,.csv,.xml,.yaml,.yml,.sql,text/*"
+                      onChange={(event) => void loadDiffFile(event.target.files?.[0], "right")}
+                    />
+                  </label>
+                </header>
+                <div className="diff-editor-shell">
+                  <div className="diff-editor-lines" aria-hidden="true">
+                    {Array.from({ length: Math.max(diffRight.split(/\r\n?|\n/).length, 1) }, (_, index) => <span key={index}>{index + 1}</span>)}
+                  </div>
+                  <textarea
+                    aria-label="Changed text"
+                    value={diffRight}
+                    onChange={(event) => setDiffRight(event.target.value)}
+                    onScroll={(event) => {
+                      const gutter = event.currentTarget.previousElementSibling as HTMLElement | null;
+                      if (gutter) gutter.scrollTop = event.currentTarget.scrollTop;
+                    }}
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+
+              <footer className="diff-input-actions">
+                <button className="utility-action" onClick={() => { setInput(""); setDiffRight(""); }}>Clear</button>
+                <button className="utility-action" onClick={swapDiffInputs}>Swap</button>
+                <button className="primary-action" onClick={() => void runAction("Compare")}>Find differences</button>
+              </footer>
+            </section>
+          )
         )}
 
         {activeTool.id === "markdown" && (
